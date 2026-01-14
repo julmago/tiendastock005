@@ -1,0 +1,20 @@
+[10-Jan-2026 17:14:41 UTC] PHP Fatal error:  Uncaught PDOException: SQLSTATE[23000]: Integrity constraint violation: 1062 Duplicate entry 'info@tuseduccion.com.ar' for key 'uq_users_email' in /home/n0s3dgxmj101/public_html/tiendastock.com.ar/vendedor/register.php:13
+Stack trace:
+#0 /home/n0s3dgxmj101/public_html/tiendastock.com.ar/vendedor/register.php(13): PDOStatement->execute()
+#1 {main}
+  thrown in /home/n0s3dgxmj101/public_html/tiendastock.com.ar/vendedor/register.php on line 13
+[10-Jan-2026 17:15:16 UTC] PHP Fatal error:  Uncaught PDOException: SQLSTATE[23000]: Integrity constraint violation: 1062 Duplicate entry 'info@tuseduccion.com.ar' for key 'uq_users_email' in /home/n0s3dgxmj101/public_html/tiendastock.com.ar/vendedor/register.php:13
+Stack trace:
+#0 /home/n0s3dgxmj101/public_html/tiendastock.com.ar/vendedor/register.php(13): PDOStatement->execute()
+#1 {main}
+  thrown in /home/n0s3dgxmj101/public_html/tiendastock.com.ar/vendedor/register.php on line 13
+[10-Jan-2026 17:17:32 UTC] PHP Fatal error:  Uncaught PDOException: SQLSTATE[HY093]: Invalid parameter number in /home/n0s3dgxmj101/public_html/tiendastock.com.ar/vendedor/tiendas.php:30
+Stack trace:
+#0 /home/n0s3dgxmj101/public_html/tiendastock.com.ar/vendedor/tiendas.php(30): PDOStatement->execute()
+#1 {main}
+  thrown in /home/n0s3dgxmj101/public_html/tiendastock.com.ar/vendedor/tiendas.php on line 30
+[10-Jan-2026 19:58:16 UTC] PHP Fatal error:  Uncaught PDOException: SQLSTATE[42S22]: Column not found: 1054 Unknown column 'universal_code' in 'SET' in /home/n0s3dgxmj101/public_html/tiendastock.com.ar/vendedor/producto.php:43
+Stack trace:
+#0 /home/n0s3dgxmj101/public_html/tiendastock.com.ar/vendedor/producto.php(43): PDO->prepare()
+#1 {main}
+  thrown in /home/n0s3dgxmj101/public_html/tiendastock.com.ar/vendedor/producto.php on line 43
