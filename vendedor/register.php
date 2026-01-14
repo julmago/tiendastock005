@@ -16,16 +16,27 @@ if ($_SERVER['REQUEST_METHOD']==='POST') {
     if ($existsSt->fetch()) {
       $err="Ese email ya está registrado.";
     } else {
-      $hash = password_hash($pass, PASSWORD_DEFAULT);
-      $pdo->prepare("INSERT INTO users(email,password_hash,role,status) VALUES(?,?, 'seller','active')")->execute([$email,$hash]);
-      $uid = (int)$pdo->lastInsertId();
-      $wholesaleStatus = $accountType === 'wholesale' ? 'pending' : 'not_requested';
-      $pdo->prepare("INSERT INTO sellers(user_id,display_name,account_type,wholesale_status) VALUES(?,?,?,?)")
-        ->execute([$uid,$name,$accountType,$wholesaleStatus]);
-      if ($accountType === 'wholesale') {
-        $msg="Vendedor mayorista creado (pendiente de aprobación).";
-      } else {
-        $msg="Vendedor minorista creado (activo).";
+      try {
+        $pdo->beginTransaction();
+        $hash = password_hash($pass, PASSWORD_DEFAULT);
+        $pdo->prepare("INSERT INTO users(email,password_hash,role,status) VALUES(?,?, 'seller','active')")->execute([$email,$hash]);
+        $uid = (int)$pdo->lastInsertId();
+        $wholesaleStatus = $accountType === 'wholesale' ? 'pending' : 'not_requested';
+        $pdo->prepare("INSERT INTO sellers(user_id,display_name,account_type,wholesale_status) VALUES(?,?,?,?)")
+          ->execute([$uid,$name,$accountType,$wholesaleStatus]);
+        $pdo->commit();
+        if ($accountType === 'wholesale') {
+          $_SESSION['flash_success'] = "Vendedor mayorista creado (pendiente de aprobación).";
+        } else {
+          $_SESSION['flash_success'] = "Vendedor minorista creado (activo).";
+        }
+        header('Location: /vendedor/login.php');
+        exit;
+      } catch (Throwable $e) {
+        if ($pdo->inTransaction()) {
+          $pdo->rollBack();
+        }
+        $err = "No se pudo completar el registro. Intentá nuevamente.";
       }
     }
   }

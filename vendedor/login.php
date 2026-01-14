@@ -10,6 +10,10 @@ if ($_SERVER['REQUEST_METHOD']==='POST') {
   $err="Credenciales inválidas.";
 }
 page_header('Vendedor - Login');
+if (!empty($_SESSION['flash_success'])) {
+  echo "<p style='color:green'>".h((string)$_SESSION['flash_success'])."</p>";
+  unset($_SESSION['flash_success']);
+}
 if (!empty($err)) echo "<p style='color:#b00'>".h($err)."</p>";
 echo "<form method='post'>
 <input type='hidden' name='csrf' value='".h(csrf_token())."'>
