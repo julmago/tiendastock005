@@ -4,7 +4,7 @@ require __DIR__.'/../_inc/layout.php';
 csrf_check();
 require_role('seller','/vendedor/login.php');
 
-$st = $pdo->prepare("SELECT id, wholesale_status FROM sellers WHERE user_id=? LIMIT 1");
+$st = $pdo->prepare("SELECT id, account_type, wholesale_status FROM sellers WHERE user_id=? LIMIT 1");
 $st->execute([(int)$_SESSION['uid']]);
 $seller = $st->fetch();
 if (!$seller) exit('Seller inválido');
@@ -15,7 +15,9 @@ if ($_SERVER['REQUEST_METHOD']==='POST') {
   $slug  = slugify((string)($_POST['slug'] ?? ''));
   $markup = (float)($_POST['markup_percent'] ?? ($type==='wholesale'?30:100));
 
-  if ($type==='wholesale' && ($seller['wholesale_status'] ?? '')!=='approved') {
+  if (($seller['account_type'] ?? 'retail') !== 'wholesale' && $type === 'wholesale') {
+    $err="Esta cuenta no puede crear tiendas mayoristas.";
+  } elseif ($type==='wholesale' && ($seller['wholesale_status'] ?? '')!=='approved') {
     $err="Para crear tienda mayorista necesitás aprobación.";
   } elseif (!$name || !$slug) {
     $err="Completá nombre y slug (solo letras/números).";
@@ -43,7 +45,11 @@ if (!empty($err)) echo "<p style='color:#b00'>".h($err)."</p>";
 
 echo "<form method='post'>
 <input type='hidden' name='csrf' value='".h(csrf_token())."'>
-<p>Tipo: <select name='store_type'><option value='retail'>minorista</option><option value='wholesale'>mayorista</option></select></p>
+<p>Tipo: <select name='store_type'><option value='retail'>minorista</option>";
+if (($seller['account_type'] ?? 'retail') === 'wholesale') {
+  echo "<option value='wholesale'>mayorista</option>";
+}
+echo "</select></p>
 <p>Nombre: <input name='name' style='width:420px'></p>
 <p>Slug: <input name='slug' style='width:220px'></p>
 <p>Markup %: <input name='markup_percent' style='width:120px' value='100'></p>
