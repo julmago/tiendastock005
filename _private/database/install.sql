@@ -96,6 +96,7 @@ CREATE TABLE IF NOT EXISTS sellers (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   user_id BIGINT UNSIGNED NOT NULL,
   display_name VARCHAR(190) NOT NULL,
+  account_type ENUM('retail','wholesale') NOT NULL DEFAULT 'retail',
   wholesale_status ENUM('not_requested','pending','approved','rejected') NOT NULL DEFAULT 'not_requested',
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
