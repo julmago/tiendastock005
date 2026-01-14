@@ -10,17 +10,18 @@ $seller = $st->fetch();
 if (!$seller) exit('Seller inválido');
 
 if ($_SERVER['REQUEST_METHOD']==='POST') {
-  $type  = $_POST['store_type'] ?? 'retail';
-  $name  = trim((string)($_POST['name'] ?? ''));
-  $slug  = slugify((string)($_POST['slug'] ?? ''));
+  $type = ($seller['account_type'] ?? 'retail') === 'wholesale' ? 'wholesale' : 'retail';
+  $name = trim((string)($_POST['name'] ?? ''));
+  $slugRaw = trim((string)($_POST['slug'] ?? ''));
+  $slug = strtolower($slugRaw);
   $markup = (float)($_POST['markup_percent'] ?? ($type==='wholesale'?30:100));
 
-  if (($seller['account_type'] ?? 'retail') !== 'wholesale' && $type === 'wholesale') {
-    $err="Esta cuenta no puede crear tiendas mayoristas.";
-  } elseif ($type==='wholesale' && ($seller['wholesale_status'] ?? '')!=='approved') {
+  if ($type==='wholesale' && ($seller['wholesale_status'] ?? '')!=='approved') {
     $err="Para crear tienda mayorista necesitás aprobación.";
   } elseif (!$name || !$slug) {
-    $err="Completá nombre y slug (solo letras/números).";
+    $err="Completá nombre y slug.";
+  } elseif (!preg_match('/^[a-z0-9]+$/i', $slugRaw)) {
+    $err="El slug solo puede tener letras y números, sin espacios ni caracteres especiales.";
   } else {
     $pdo->prepare("INSERT INTO stores(seller_id,store_type,name,slug,status,markup_percent) VALUES(?,?,?,?, 'active', ?)")
         ->execute([(int)$seller['id'],$type,$name,$slug,$markup]);
@@ -43,18 +44,33 @@ page_header('Mis tiendas');
 if (!empty($msg)) echo "<p style='color:green'>".h($msg)."</p>";
 if (!empty($err)) echo "<p style='color:#b00'>".h($err)."</p>";
 
-echo "<form method='post'>
+$defaultMarkup = (($seller['account_type'] ?? 'retail') === 'wholesale') ? '30' : '100';
+echo "<form method='post' id='store-form'>
 <input type='hidden' name='csrf' value='".h(csrf_token())."'>
-<p>Tipo: <select name='store_type'><option value='retail'>minorista</option>";
-if (($seller['account_type'] ?? 'retail') === 'wholesale') {
-  echo "<option value='wholesale'>mayorista</option>";
-}
-echo "</select></p>
+<p>Tipo: <strong>".h((($seller['account_type'] ?? 'retail') === 'wholesale') ? 'mayorista' : 'minorista')."</strong></p>
 <p>Nombre: <input name='name' style='width:420px'></p>
-<p>Slug: <input name='slug' style='width:220px'></p>
-<p>Markup %: <input name='markup_percent' style='width:120px' value='100'></p>
+<p>Slug: <input name='slug' style='width:220px' pattern='[A-Za-z0-9]+' inputmode='text' autocomplete='off'></p>
+<p id='slug-error' style='color:#b00; display:none; margin-top:-6px;'>Solo letras y números, sin espacios ni caracteres especiales.</p>
+<p>Markup %: <input name='markup_percent' style='width:120px' value='".h($defaultMarkup)."'></p>
 <button>Crear</button>
 </form><hr>";
+
+echo "<script>
+const slugInput = document.querySelector(\"input[name='slug']\");
+const slugError = document.getElementById('slug-error');
+if (slugInput) {
+  slugInput.addEventListener('input', () => {
+    const original = slugInput.value;
+    const cleaned = original.replace(/[^a-z0-9]/gi, '');
+    if (original !== cleaned) {
+      slugInput.value = cleaned;
+      if (slugError) slugError.style.display = 'block';
+    } else if (slugError) {
+      slugError.style.display = 'none';
+    }
+  });
+}
+</script>";
 
 echo "<table border='1' cellpadding='6' cellspacing='0'><tr><th>ID</th><th>Tipo</th><th>Nombre</th><th>Slug</th><th>Link</th></tr>";
 foreach($stores as $r){
