@@ -96,12 +96,23 @@ $rows = $pdo->prepare("SELECT id,title,sku,universal_code,base_price FROM provid
 $rows->execute([(int)$p['id']]);
 $list = $rows->fetchAll();
 
+$view = 'list';
+if (($_GET['view'] ?? '') === 'new') {
+  $view = 'new';
+}
+if ($edit_id > 0) {
+  $view = 'edit';
+}
+
 page_header('Proveedor - Catálogo base');
 if (!empty($msg)) echo "<p style='color:green'>".h($msg)."</p>";
 if (!empty($err)) echo "<p style='color:#b00'>".h($err)."</p>";
 if (!empty($image_errors)) {
   echo "<p style='color:#b00'>".h(implode(' ', $image_errors))."</p>";
 }
+echo "<p><a href='/proveedor/catalogo.php?view=new'>Nuevo</a> | <a href='/proveedor/catalogo.php'>Listado</a></p>";
+
+if ($view === 'new' || $view === 'edit') {
 echo "<form method='post' enctype='multipart/form-data'>
 <input type='hidden' name='csrf' value='".h(csrf_token())."'>
 <input type='hidden' name='action' id='product_action' value='save_product'>
@@ -196,11 +207,14 @@ echo "
 })();
 </script>
 <hr>";
+}
 
+if ($view === 'list') {
 echo "<table border='1' cellpadding='6' cellspacing='0'><tr><th>ID</th><th>Título</th><th>SKU</th><th>Código universal</th><th>Base</th></tr>";
 foreach($list as $r){
   $url = "/proveedor/catalogo.php?id=".h((string)$r['id']);
   echo "<tr><td>".h((string)$r['id'])."</td><td><a href='".$url."'>".h($r['title'])."</a></td><td>".h($r['sku']??'')."</td><td>".h($r['universal_code']??'')."</td><td>".h((string)$r['base_price'])."</td></tr>";
 }
 echo "</table>";
+}
 page_footer();
