@@ -92,7 +92,11 @@ if ($edit_id > 0) {
   $product_images = product_images_fetch($pdo, 'provider_product', $edit_id);
 }
 
-$rows = $pdo->prepare("SELECT id,title,sku,universal_code,base_price FROM provider_products WHERE provider_id=? ORDER BY id DESC");
+$rows = $pdo->prepare("SELECT p.id, p.title, p.sku, p.universal_code, p.base_price, i.filename_base AS cover_image
+  FROM provider_products p
+  LEFT JOIN product_images i ON i.owner_type='provider_product' AND i.owner_id=p.id AND i.position=1
+  WHERE p.provider_id=?
+  ORDER BY p.id DESC");
 $rows->execute([(int)$p['id']]);
 $list = $rows->fetchAll();
 
@@ -111,6 +115,7 @@ if (!empty($image_errors)) {
   echo "<p style='color:#b00'>".h(implode(' ', $image_errors))."</p>";
 }
 echo "<p><a href='/proveedor/catalogo.php?view=new'>Nuevo</a> | <a href='/proveedor/catalogo.php'>Listado</a></p>";
+echo "<hr>";
 
 if ($view === 'new' || $view === 'edit') {
 echo "<form method='post' enctype='multipart/form-data'>
@@ -210,10 +215,17 @@ echo "
 }
 
 if ($view === 'list') {
-echo "<table border='1' cellpadding='6' cellspacing='0'><tr><th>ID</th><th>Título</th><th>SKU</th><th>Código universal</th><th>Base</th></tr>";
+echo "<table border='1' cellpadding='6' cellspacing='0'><tr><th>Imagen</th><th>Título</th><th>SKU</th><th>Código universal</th><th>Base</th></tr>";
 foreach($list as $r){
   $url = "/proveedor/catalogo.php?id=".h((string)$r['id']);
-  echo "<tr><td>".h((string)$r['id'])."</td><td><a href='".$url."'>".h($r['title'])."</a></td><td>".h($r['sku']??'')."</td><td>".h($r['universal_code']??'')."</td><td>".h((string)$r['base_price'])."</td></tr>";
+  if (!empty($r['cover_image'])) {
+    $thumb = product_image_with_size($r['cover_image'], 150);
+    $thumb_url = "/uploads/provider_products/".h((string)$r['id'])."/".h($thumb);
+    $image_cell = "<img src='".$thumb_url."' alt='' width='50' height='50'>";
+  } else {
+    $image_cell = "—";
+  }
+  echo "<tr><td>".$image_cell."</td><td><a href='".$url."'>".h($r['title'])."</a></td><td>".h($r['sku']??'')."</td><td>".h($r['universal_code']??'')."</td><td>".h((string)$r['base_price'])."</td></tr>";
 }
 echo "</table>";
 }
