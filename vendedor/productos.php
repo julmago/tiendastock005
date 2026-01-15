@@ -162,8 +162,19 @@ if ($action === 'list') {
   echo "<h3>Listado</h3>";
   if (!$storeProducts) { echo "<p>Sin productos.</p>"; page_footer(); exit; }
 
+  $productIds = array_map('intval', array_column($storeProducts, 'id'));
+  $coverImages = [];
+  if ($productIds) {
+    $placeholders = implode(',', array_fill(0, count($productIds), '?'));
+    $stCover = $pdo->prepare("SELECT owner_id, filename_base FROM product_images WHERE owner_type='store_product' AND is_cover=1 AND owner_id IN ($placeholders)");
+    $stCover->execute($productIds);
+    foreach ($stCover->fetchAll() as $row) {
+      $coverImages[(int)$row['owner_id']] = $row['filename_base'];
+    }
+  }
+
   echo "<table border='1' cellpadding='6' cellspacing='0'>
-  <tr><th>ID</th><th>Título</th><th>SKU</th><th>Código universal</th><th>Stock prov</th><th>Own qty</th><th>Own $</th><th>Manual $</th><th>Precio actual</th></tr>";
+  <tr><th>Imagen</th><th>Título</th><th>SKU</th><th>Código universal</th><th>Stock prov</th><th>Own qty</th><th>Own $</th><th>Manual $</th><th>Precio actual</th></tr>";
   foreach($storeProducts as $sp){
     $provStock = provider_stock_sum($pdo, (int)$sp['id']);
     $sell = current_sell_price($pdo, $currentStore, $sp);
@@ -171,8 +182,16 @@ if ($action === 'list') {
     $sellTxt = ($sell>0) ? '$'.number_format($sell,2,',','.') : 'Sin stock';
 
     $editUrl = "producto.php?id=".h((string)$sp['id'])."&store_id=".h((string)$storeId);
+    $coverBase = $coverImages[(int)$sp['id']] ?? '';
+    if ($coverBase !== '') {
+      $thumb = product_image_with_size($coverBase, 150);
+      $thumbUrl = "/uploads/store_products/".h((string)$sp['id'])."/".h($thumb);
+      $coverCell = "<img src='".$thumbUrl."' alt='' width='50' height='50' style='object-fit:cover;'>";
+    } else {
+      $coverCell = "—";
+    }
     echo "<tr>
-      <td>".h((string)$sp['id'])."</td>
+      <td>".$coverCell."</td>
       <td><a href='".$editUrl."'>".h($sp['title'])."</a></td>
       <td>".h($sp['sku']??'')."</td>
       <td>".h($sp['universal_code']??'')."</td>
