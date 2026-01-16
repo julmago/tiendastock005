@@ -2,6 +2,7 @@
 require __DIR__.'/../config.php';
 require __DIR__.'/../_inc/layout.php';
 require __DIR__.'/../_inc/pricing.php';
+csrf_check();
 
 $BASE = '/mayorista/';
 $STORE_TYPE = 'wholesale';
@@ -15,7 +16,22 @@ $store = $st->fetch();
 if (!$store) { http_response_code(404); exit('Tienda no encontrada'); }
 
 $cartKey = 'cart_'.$store['id'];
+$deliveryKey = 'delivery_'.$store['id'];
+$deliveryMethods = [
+  'retiro' => 'Retiro en tienda',
+  'envio' => 'Envío a domicilio',
+];
 if (!isset($_SESSION[$cartKey])) $_SESSION[$cartKey] = [];
+
+if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['delivery_method'])) {
+  $delivery = (string)($_POST['delivery_method'] ?? '');
+  if (!array_key_exists($delivery, $deliveryMethods)) {
+    $deliveryErr = "Elegí una forma de entrega válida.";
+  } else {
+    $_SESSION[$deliveryKey] = $delivery;
+    header("Location: ".$BASE.$slug."/"); exit;
+  }
+}
 
 if (isset($_GET['add'])) {
   $pid = (int)($_GET['add'] ?? 0);
@@ -55,6 +71,7 @@ else {
 }
 
 $cart = $_SESSION[$cartKey];
+$deliverySelected = (string)($_SESSION[$deliveryKey] ?? '');
 echo "<h3>Carrito</h3>";
 if (!$cart) {
   echo "<p>Vacío</p>";
@@ -84,7 +101,25 @@ if (!$cart) {
   }
   echo "</table>";
   echo "<p><b>Total:</b> $".number_format($itemsTotal,2,',','.')."</p>";
-  echo "<p><a href='".$BASE."checkout.php?slug=".h($slug)."'>Ir a pagar</a></p>";
+  echo "<h3>Forma de entrega</h3>";
+  if (!empty($deliveryErr) || isset($_GET['delivery_error'])) {
+    echo "<p style='color:#b00'>Seleccioná una forma de entrega para continuar.</p>";
+  }
+  echo "<form method='post'>
+  <input type='hidden' name='csrf' value='".h(csrf_token())."'>
+  <select name='delivery_method'>
+    <option value=''>Seleccioná una opción</option>";
+  foreach ($deliveryMethods as $key => $label) {
+    $selected = $deliverySelected === $key ? " selected" : "";
+    echo "<option value='".h($key)."'{$selected}>".h($label)."</option>";
+  }
+  echo "</select> <button>Guardar</button></form>";
+  if ($deliverySelected && isset($deliveryMethods[$deliverySelected])) {
+    echo "<p><b>Seleccionado:</b> ".h($deliveryMethods[$deliverySelected])."</p>";
+    echo "<p><a href='".$BASE."checkout.php?slug=".h($slug)."'>Ir a pagar</a></p>";
+  } else {
+    echo "<p><span style='color:#666'>Ir a pagar</span></p>";
+  }
 }
 
 page_footer();
