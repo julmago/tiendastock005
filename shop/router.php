@@ -63,6 +63,21 @@ if (isset($_GET['del'])) {
 }
 
 $customer = store_customer_current($pdo, (int)$store['id']);
+$customerProfileComplete = false;
+if ($customer) {
+  $customerStreetNumberSn = (int)($customer['street_number_sn'] ?? 0) === 1;
+  $customerProfileComplete = trim((string)($customer['postal_code'] ?? '')) !== ''
+    && trim((string)($customer['email'] ?? '')) !== ''
+    && trim((string)($customer['first_name'] ?? '')) !== ''
+    && trim((string)($customer['last_name'] ?? '')) !== ''
+    && trim((string)($customer['phone'] ?? '')) !== ''
+    && trim((string)($customer['street'] ?? '')) !== ''
+    && ($customerStreetNumberSn || trim((string)($customer['street_number'] ?? '')) !== '')
+    && trim((string)($customer['document_id'] ?? '')) !== '';
+  if ($customerProfileComplete) {
+    $_SESSION[$postalKey] = (string)$customer['postal_code'];
+  }
+}
 $GLOBALS['STORE_AUTH_HTML'] = store_auth_links($store, $BASE, $slug, $customer);
 page_header('Tienda: '.$store['name']);
 echo "<p><a href='".$BASE."'>← todas las tiendas</a></p>";
@@ -128,13 +143,15 @@ if (!$cart) {
     echo "<p><b>Entrega:</b> $".number_format($deliveryPrice,2,',','.')."</p>";
     echo "<p><b>Total final:</b> $".number_format($grandTotal,2,',','.')."</p>";
   }
-  echo "<h3>Código postal</h3>";
-  if (!empty($postalErr)) echo "<p style='color:#b00'>".h($postalErr)."</p>";
-  $postalValue = (string)($_SESSION[$postalKey] ?? '');
-  echo "<form method='post'>
-  <input type='hidden' name='csrf' value='".h(csrf_token())."'>
-  <input type='text' name='postal_code' value='".h($postalValue)."' maxlength='4' inputmode='numeric' pattern='\\d{1,4}' placeholder='Código postal'>
-  <button>Guardar</button></form>";
+  if (!$customerProfileComplete) {
+    echo "<h3>Código postal</h3>";
+    if (!empty($postalErr)) echo "<p style='color:#b00'>".h($postalErr)."</p>";
+    $postalValue = (string)($_SESSION[$postalKey] ?? '');
+    echo "<form method='post'>
+    <input type='hidden' name='csrf' value='".h(csrf_token())."'>
+    <input type='text' name='postal_code' value='".h($postalValue)."' maxlength='4' inputmode='numeric' pattern='\\d{1,4}' placeholder='Código postal'>
+    <button>Guardar</button></form>";
+  }
   echo "<h3>Forma de entrega</h3>";
   if (!empty($deliveryErr) || isset($_GET['delivery_error'])) {
     echo "<p style='color:#b00'>Seleccioná una forma de entrega para continuar.</p>";
