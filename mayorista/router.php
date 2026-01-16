@@ -17,15 +17,16 @@ if (!$store) { http_response_code(404); exit('Tienda no encontrada'); }
 
 $cartKey = 'cart_'.$store['id'];
 $deliveryKey = 'delivery_'.$store['id'];
-$deliveryMethods = [
-  'retiro' => 'Retiro en tienda',
-  'envio' => 'Envío a domicilio',
-];
+$deliveryRows = $pdo->query("SELECT id, name, delivery_time, price FROM delivery_methods WHERE status='active' ORDER BY position ASC, id ASC")->fetchAll();
+$deliveryMethods = [];
+foreach ($deliveryRows as $row) {
+  $deliveryMethods[(int)$row['id']] = $row;
+}
 if (!isset($_SESSION[$cartKey])) $_SESSION[$cartKey] = [];
 
 if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['delivery_method'])) {
-  $delivery = (string)($_POST['delivery_method'] ?? '');
-  if (!array_key_exists($delivery, $deliveryMethods)) {
+  $delivery = (int)($_POST['delivery_method'] ?? 0);
+  if (!$delivery || !array_key_exists($delivery, $deliveryMethods)) {
     $deliveryErr = "Elegí una forma de entrega válida.";
   } else {
     $_SESSION[$deliveryKey] = $delivery;
@@ -71,7 +72,8 @@ else {
 }
 
 $cart = $_SESSION[$cartKey];
-$deliverySelected = (string)($_SESSION[$deliveryKey] ?? '');
+$deliverySelected = (int)($_SESSION[$deliveryKey] ?? 0);
+$deliverySelectedMethod = $deliverySelected ? ($deliveryMethods[$deliverySelected] ?? null) : null;
 echo "<h3>Carrito</h3>";
 if (!$cart) {
   echo "<p>Vacío</p>";
@@ -100,7 +102,13 @@ if (!$cart) {
     </tr>";
   }
   echo "</table>";
+  $deliveryPrice = $deliverySelectedMethod ? (float)$deliverySelectedMethod['price'] : 0.0;
+  $grandTotal = $itemsTotal + $deliveryPrice;
   echo "<p><b>Total:</b> $".number_format($itemsTotal,2,',','.')."</p>";
+  if ($deliverySelectedMethod) {
+    echo "<p><b>Entrega:</b> $".number_format($deliveryPrice,2,',','.')."</p>";
+    echo "<p><b>Total final:</b> $".number_format($grandTotal,2,',','.')."</p>";
+  }
   echo "<h3>Forma de entrega</h3>";
   if (!empty($deliveryErr) || isset($_GET['delivery_error'])) {
     echo "<p style='color:#b00'>Seleccioná una forma de entrega para continuar.</p>";
@@ -109,13 +117,18 @@ if (!$cart) {
   <input type='hidden' name='csrf' value='".h(csrf_token())."'>
   <select name='delivery_method'>
     <option value=''>Seleccioná una opción</option>";
-  foreach ($deliveryMethods as $key => $label) {
-    $selected = $deliverySelected === $key ? " selected" : "";
-    echo "<option value='".h($key)."'{$selected}>".h($label)."</option>";
+  foreach ($deliveryMethods as $key => $method) {
+    $selected = $deliverySelected === (int)$key ? " selected" : "";
+    $label = $method['name']." - ".$method['delivery_time']." ($".number_format((float)$method['price'],2,',','.').")";
+    echo "<option value='".h((string)$key)."'{$selected}>".h($label)."</option>";
   }
   echo "</select> <button>Guardar</button></form>";
-  if ($deliverySelected && isset($deliveryMethods[$deliverySelected])) {
-    echo "<p><b>Seleccionado:</b> ".h($deliveryMethods[$deliverySelected])."</p>";
+  if (!$deliveryMethods) {
+    echo "<p style='color:#b00'>No hay formas de entrega activas.</p>";
+  }
+  if ($deliverySelectedMethod) {
+    $label = $deliverySelectedMethod['name']." - ".$deliverySelectedMethod['delivery_time'];
+    echo "<p><b>Seleccionado:</b> ".h($label)." ($".number_format((float)$deliverySelectedMethod['price'],2,',','.').")</p>";
     echo "<p><a href='".$BASE."checkout.php?slug=".h($slug)."'>Ir a pagar</a></p>";
   } else {
     echo "<p><span style='color:#666'>Ir a pagar</span></p>";
