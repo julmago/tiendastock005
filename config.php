@@ -1,5 +1,14 @@
 <?php
 declare(strict_types=1);
+$cookieParams = session_get_cookie_params();
+session_set_cookie_params([
+  'lifetime' => $cookieParams['lifetime'],
+  'path' => '/',
+  'domain' => $cookieParams['domain'],
+  'secure' => $cookieParams['secure'],
+  'httponly' => $cookieParams['httponly'],
+  'samesite' => $cookieParams['samesite'] ?? 'Lax',
+]);
 session_start();
 
 // ====== CONFIGURACIÓN DB ======
