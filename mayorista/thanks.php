@@ -11,7 +11,7 @@ if ($slug) {
   $store = $st->fetch();
 }
 if ($store) {
-  $customer = store_customer_current($pdo, (int)$store['id']);
+  $customer = store_customer_current($pdo);
   $GLOBALS['STORE_AUTH_HTML'] = store_auth_links($store, '/mayorista/', $slug, $customer);
 }
 page_header('Gracias');

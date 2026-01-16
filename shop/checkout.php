@@ -45,7 +45,7 @@ $methods = $pdo->prepare("SELECT method, enabled, extra_percent FROM store_payme
 $methods->execute([(int)$store['id']]);
 $payMethods = $methods->fetchAll();
 
-$customer = store_customer_current($pdo, (int)$store['id']);
+$customer = store_customer_current($pdo);
 $postalSaved = (string)($_SESSION[$postalKey] ?? '');
 if ($postalSaved === '' && $customer) $postalSaved = (string)$customer['postal_code'];
 $formData = [
@@ -93,7 +93,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST') {
     $err = "Ingresá DNI o CUIT.";
   }
   if (empty($err) && $customer && $customerEmail !== (string)$customer['email']) {
-    $existing = store_customer_find($pdo, (int)$store['id'], $customerEmail);
+    $existing = store_customer_find($pdo, $customerEmail);
     if ($existing && (int)$existing['id'] !== (int)$customer['id']) {
       $err = "Ya existe una cuenta con ese email.";
     }
@@ -163,7 +163,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST') {
         if ($customer) {
           $pdo->prepare("UPDATE store_customers
                         SET email=?, first_name=?, last_name=?, phone=?, postal_code=?, street=?, street_number=?, street_number_sn=?, apartment=?, neighborhood=?, document_id=?
-                        WHERE id=? AND store_id=?")
+                        WHERE id=?")
               ->execute([
                 $customerEmail,
                 $customerFirst,
@@ -176,11 +176,10 @@ if ($_SERVER['REQUEST_METHOD']==='POST') {
                 $customerApartment !== '' ? $customerApartment : null,
                 $customerNeighborhood !== '' ? $customerNeighborhood : null,
                 $customerDocument,
-                (int)$customer['id'],
-                (int)$store['id']
+                (int)$customer['id']
               ]);
-          $updated = store_customer_find($pdo, (int)$store['id'], $customerEmail);
-          if ($updated) store_customer_set_session($updated, (int)$store['id']);
+          $updated = store_customer_find($pdo, $customerEmail);
+          if ($updated) store_customer_set_session($updated);
         }
 
         $providerFeeTotal = 0.0;
