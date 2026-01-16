@@ -139,21 +139,12 @@ if (!empty($image_errors)) {
   echo "<p style='color:#b00'>".h(implode(' ', $image_errors))."</p>";
 }
 
-echo "<div style='display:flex; align-items:center; justify-content:space-between; gap:12px;'>
-  <h2 style='margin:0;'>Vendedor - Productos</h2>
+echo "<div style='display:flex; align-items:center; justify-content:flex-end; gap:12px;'>
   <div><a href='".$newUrl."'>Nuevo</a> | <a href='".$listUrl."'>Listado</a></div>
 </div>";
 
 if ($action === 'list') {
-  echo "<form method='get'>
-  <input type='hidden' name='action' value='list'>
-  <select name='store_id'>";
-  foreach($myStores as $ms){
-    $sel = ((int)$ms['id']===$storeId) ? "selected" : "";
-    echo "<option value='".h((string)$ms['id'])."' $sel>".h($ms['name'])." (".h($ms['store_type']).")</option>";
-  }
-  echo "</select> <button>Ver</button>
-  </form><hr>";
+  echo "<hr>";
 
   $stp = $pdo->prepare("SELECT * FROM store_products WHERE store_id=? ORDER BY id DESC");
   $stp->execute([$storeId]);
