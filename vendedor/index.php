@@ -17,5 +17,6 @@ if ($s) {
 echo "<ul>
 <li><a href='/vendedor/tiendas.php'>Mis tiendas</a></li>
 <li><a href='/vendedor/productos.php'>Productos</a></li>
+<li><a href='/vendedor/pedidos.php'>Pedidos</a></li>
 </ul>";
 page_footer();
