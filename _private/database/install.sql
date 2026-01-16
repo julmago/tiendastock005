@@ -121,6 +121,29 @@ CREATE TABLE IF NOT EXISTS stores (
   CONSTRAINT fk_store_seller FOREIGN KEY (seller_id) REFERENCES sellers(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS store_customers (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  store_id BIGINT UNSIGNED NOT NULL,
+  email VARCHAR(190) NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  first_name VARCHAR(120) NOT NULL,
+  last_name VARCHAR(120) NOT NULL,
+  phone VARCHAR(40) NOT NULL,
+  postal_code VARCHAR(10) NOT NULL,
+  street VARCHAR(190) NOT NULL,
+  street_number VARCHAR(40) NOT NULL,
+  street_number_sn TINYINT(1) NOT NULL DEFAULT 0,
+  apartment VARCHAR(40) NULL,
+  neighborhood VARCHAR(120) NULL,
+  document_id VARCHAR(40) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_store_customers_email (store_id, email),
+  KEY idx_store_customers_store (store_id),
+  CONSTRAINT fk_store_customers_store FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS store_payment_methods (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   store_id BIGINT UNSIGNED NOT NULL,
@@ -180,6 +203,7 @@ CREATE TABLE IF NOT EXISTS store_product_sources (
 CREATE TABLE IF NOT EXISTS orders (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   store_id BIGINT UNSIGNED NOT NULL,
+  store_customer_id BIGINT UNSIGNED NULL,
   status ENUM('created','awaiting_payment','paid','packing','shipped','delivered','cancelled') NOT NULL DEFAULT 'created',
   payment_method ENUM('mercadopago','transfer','cash_pickup') NOT NULL,
   payment_status ENUM('pending','approved','rejected','refunded') NOT NULL DEFAULT 'pending',
@@ -188,11 +212,24 @@ CREATE TABLE IF NOT EXISTS orders (
   seller_fee_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
   provider_fee_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
   mp_extra_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  customer_email VARCHAR(190) NOT NULL,
+  customer_first_name VARCHAR(120) NOT NULL,
+  customer_last_name VARCHAR(120) NOT NULL,
+  customer_phone VARCHAR(40) NOT NULL,
+  customer_postal_code VARCHAR(10) NOT NULL,
+  customer_street VARCHAR(190) NOT NULL,
+  customer_street_number VARCHAR(40) NOT NULL,
+  customer_street_number_sn TINYINT(1) NOT NULL DEFAULT 0,
+  customer_apartment VARCHAR(40) NULL,
+  customer_neighborhood VARCHAR(120) NULL,
+  customer_document_id VARCHAR(40) NOT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   KEY idx_orders_store (store_id),
-  CONSTRAINT fk_orders_store FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE RESTRICT
+  KEY idx_orders_store_customer (store_customer_id),
+  CONSTRAINT fk_orders_store FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE RESTRICT,
+  CONSTRAINT fk_orders_store_customer FOREIGN KEY (store_customer_id) REFERENCES store_customers(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS order_items (
