@@ -1,5 +1,6 @@
 <?php
 function page_header(string $title): void {
+  $storeAuthHtml = $GLOBALS['STORE_AUTH_HTML'] ?? '';
   echo "<!doctype html><html><head><meta charset='utf-8'>";
   echo "<meta name='viewport' content='width=device-width,initial-scale=1'>";
   echo "<title>".h($title)."</title></head><body>";
@@ -9,6 +10,10 @@ function page_header(string $title): void {
   if (isset($_SESSION['uid'])) {
     echo "Rol: <b>".h($_SESSION['role'] ?? '')."</b> — ".h($_SESSION['email'] ?? '')." — ";
     echo "<a href='/logout.php'>Salir</a>";
+  }
+  if ($storeAuthHtml) {
+    if (isset($_SESSION['uid'])) echo " | ";
+    echo $storeAuthHtml;
   }
   echo "</div></div><hr>";
 }

@@ -2,6 +2,7 @@
 require __DIR__.'/../config.php';
 require __DIR__.'/../_inc/layout.php';
 require __DIR__.'/../_inc/pricing.php';
+require __DIR__.'/../_inc/store_auth.php';
 csrf_check();
 
 $BASE = '/shop/';
@@ -17,12 +18,28 @@ if (!$store) { http_response_code(404); exit('Tienda no encontrada'); }
 
 $cartKey = 'cart_'.$store['id'];
 $deliveryKey = 'delivery_'.$store['id'];
+$postalKey = 'postal_code_'.$store['id'];
 $deliveryRows = $pdo->query("SELECT id, name, delivery_time, price FROM delivery_methods WHERE status='active' ORDER BY position ASC, id ASC")->fetchAll();
 $deliveryMethods = [];
 foreach ($deliveryRows as $row) {
   $deliveryMethods[(int)$row['id']] = $row;
 }
 if (!isset($_SESSION[$cartKey])) $_SESSION[$cartKey] = [];
+
+if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['postal_code'])) {
+  $postal = trim((string)($_POST['postal_code'] ?? ''));
+  if ($postal !== '' && !preg_match('/^\d{1,4}$/', $postal)) {
+    $postalErr = "Ingresá un código postal válido (solo números, hasta 4).";
+  } else {
+    $_SESSION[$postalKey] = $postal;
+    $customer = store_customer_current($pdo, (int)$store['id']);
+    if ($customer) {
+      $pdo->prepare("UPDATE store_customers SET postal_code=? WHERE id=? AND store_id=?")
+          ->execute([$postal, (int)$customer['id'], (int)$store['id']]);
+    }
+    header("Location: ".$BASE.$slug."/"); exit;
+  }
+}
 
 if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['delivery_method'])) {
   $delivery = (int)($_POST['delivery_method'] ?? 0);
@@ -45,6 +62,8 @@ if (isset($_GET['del'])) {
   header("Location: ".$BASE.$slug."/"); exit;
 }
 
+$customer = store_customer_current($pdo, (int)$store['id']);
+$GLOBALS['STORE_AUTH_HTML'] = store_auth_links($store, $BASE, $slug, $customer);
 page_header('Tienda: '.$store['name']);
 echo "<p><a href='".$BASE."'>← todas las tiendas</a></p>";
 
@@ -109,6 +128,13 @@ if (!$cart) {
     echo "<p><b>Entrega:</b> $".number_format($deliveryPrice,2,',','.')."</p>";
     echo "<p><b>Total final:</b> $".number_format($grandTotal,2,',','.')."</p>";
   }
+  echo "<h3>Código postal</h3>";
+  if (!empty($postalErr)) echo "<p style='color:#b00'>".h($postalErr)."</p>";
+  $postalValue = (string)($_SESSION[$postalKey] ?? '');
+  echo "<form method='post'>
+  <input type='hidden' name='csrf' value='".h(csrf_token())."'>
+  <input type='text' name='postal_code' value='".h($postalValue)."' maxlength='4' inputmode='numeric' pattern='\\d{1,4}' placeholder='Código postal'>
+  <button>Guardar</button></form>";
   echo "<h3>Forma de entrega</h3>";
   if (!empty($deliveryErr) || isset($_GET['delivery_error'])) {
     echo "<p style='color:#b00'>Seleccioná una forma de entrega para continuar.</p>";

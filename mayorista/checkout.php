@@ -2,6 +2,7 @@
 require __DIR__.'/../config.php';
 require __DIR__.'/../_inc/layout.php';
 require __DIR__.'/../_inc/pricing.php';
+require __DIR__.'/../_inc/store_auth.php';
 csrf_check();
 
 $BASE = '/mayorista/';
@@ -20,6 +21,7 @@ $cart = $_SESSION[$cartKey] ?? [];
 if (!$cart) { header("Location: ".$BASE.$slug."/"); exit; }
 
 $deliveryKey = 'delivery_'.$store['id'];
+$postalKey = 'postal_code_'.$store['id'];
 $deliveryRows = $pdo->query("SELECT id, name, delivery_time, price FROM delivery_methods WHERE status='active' ORDER BY position ASC, id ASC")->fetchAll();
 $deliveryMethods = [];
 foreach ($deliveryRows as $row) {
@@ -42,14 +44,67 @@ $methods = $pdo->prepare("SELECT method, enabled, extra_percent FROM store_payme
 $methods->execute([(int)$store['id']]);
 $payMethods = $methods->fetchAll();
 
+$customer = store_customer_current($pdo, (int)$store['id']);
+$postalSaved = (string)($_SESSION[$postalKey] ?? '');
+if ($postalSaved === '' && $customer) $postalSaved = (string)$customer['postal_code'];
+$formData = [
+  'email' => (string)($_POST['email'] ?? ($customer['email'] ?? '')),
+  'first_name' => (string)($_POST['first_name'] ?? ($customer['first_name'] ?? '')),
+  'last_name' => (string)($_POST['last_name'] ?? ($customer['last_name'] ?? '')),
+  'phone' => (string)($_POST['phone'] ?? ($customer['phone'] ?? '')),
+  'postal_code' => (string)($_POST['postal_code'] ?? $postalSaved),
+  'street' => (string)($_POST['street'] ?? ($customer['street'] ?? '')),
+  'street_number' => (string)($_POST['street_number'] ?? (($customer && (int)$customer['street_number_sn'] === 0) ? (string)$customer['street_number'] : '')),
+  'street_number_sn' => isset($_POST['street_number_sn']) ? true : (($customer && (int)$customer['street_number_sn'] === 1) ? true : false),
+  'apartment' => (string)($_POST['apartment'] ?? ($customer['apartment'] ?? '')),
+  'neighborhood' => (string)($_POST['neighborhood'] ?? ($customer['neighborhood'] ?? '')),
+  'document_id' => (string)($_POST['document_id'] ?? ($customer['document_id'] ?? '')),
+];
+
 if ($_SERVER['REQUEST_METHOD']==='POST') {
+  $customerEmail = trim((string)($_POST['email'] ?? ''));
+  $customerFirst = trim((string)($_POST['first_name'] ?? ''));
+  $customerLast = trim((string)($_POST['last_name'] ?? ''));
+  $customerPhone = trim((string)($_POST['phone'] ?? ''));
+  $customerPostal = trim((string)($_POST['postal_code'] ?? ''));
+  $customerStreet = trim((string)($_POST['street'] ?? ''));
+  $customerStreetNumberSn = isset($_POST['street_number_sn']) ? 1 : 0;
+  $customerStreetNumber = $customerStreetNumberSn ? 'SN' : trim((string)($_POST['street_number'] ?? ''));
+  $customerApartment = trim((string)($_POST['apartment'] ?? ''));
+  $customerNeighborhood = trim((string)($_POST['neighborhood'] ?? ''));
+  $customerDocument = trim((string)($_POST['document_id'] ?? ''));
+
+  if (!$customerEmail || !filter_var($customerEmail, FILTER_VALIDATE_EMAIL)) {
+    $err = "Ingresá un email válido.";
+  } elseif ($customerFirst === '') {
+    $err = "Ingresá tu nombre.";
+  } elseif ($customerLast === '') {
+    $err = "Ingresá tu apellido.";
+  } elseif ($customerPhone === '') {
+    $err = "Ingresá tu teléfono.";
+  } elseif ($customerPostal === '' || !preg_match('/^\\d{1,4}$/', $customerPostal)) {
+    $err = "Ingresá un código postal válido (solo números, hasta 4).";
+  } elseif ($customerStreet === '') {
+    $err = "Ingresá tu calle.";
+  } elseif (!$customerStreetNumberSn && $customerStreetNumber === '') {
+    $err = "Ingresá el número de tu domicilio o marcá Sin número.";
+  } elseif ($customerDocument === '') {
+    $err = "Ingresá DNI o CUIT.";
+  }
+  if (empty($err) && $customer && $customerEmail !== (string)$customer['email']) {
+    $existing = store_customer_find($pdo, (int)$store['id'], $customerEmail);
+    if ($existing && (int)$existing['id'] !== (int)$customer['id']) {
+      $err = "Ya existe una cuenta con ese email.";
+    }
+  }
+
   $method = (string)($_POST['payment_method'] ?? '');
   $valid = false; $extraPercent = 0.0;
   foreach($payMethods as $m){
     if ($m['method']===$method){ $valid=true; $extraPercent=(float)$m['extra_percent']; }
   }
-  if (!$valid) $err="Elegí un medio de pago válido.";
-  else {
+  if (empty($err) && !$valid) $err="Elegí un medio de pago válido.";
+  else if (empty($err)) {
     $itemsTotal = 0.0;
     $lines = [];
     foreach($cart as $pid=>$qty){
@@ -64,6 +119,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST') {
     }
 
     if (empty($err) && $itemsTotal>0) {
+      $_SESSION[$postalKey] = $customerPostal;
       $sellerFeePercent = (float)setting($pdo,'seller_fee_percent','3');
       $providerFeePercent = (float)setting($pdo,'provider_fee_percent','1');
 
@@ -74,10 +130,53 @@ if ($_SERVER['REQUEST_METHOD']==='POST') {
 
       $pdo->beginTransaction();
       try {
-        $pdo->prepare("INSERT INTO orders(store_id,status,payment_method,payment_status,items_total,grand_total,seller_fee_amount,provider_fee_amount,mp_extra_amount)
-                      VALUES(?, 'created', ?, 'pending', ?, ?, ?, 0, ?)")
-            ->execute([(int)$store['id'], $method, $itemsTotal, $grand, $sellerFee, $mpExtra]);
+        $storeCustomerId = $customer ? (int)$customer['id'] : null;
+        $pdo->prepare("INSERT INTO orders(store_id,store_customer_id,status,payment_method,payment_status,items_total,grand_total,seller_fee_amount,provider_fee_amount,mp_extra_amount,customer_email,customer_first_name,customer_last_name,customer_phone,customer_postal_code,customer_street,customer_street_number,customer_street_number_sn,customer_apartment,customer_neighborhood,customer_document_id)
+                      VALUES(?, ?, 'created', ?, 'pending', ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            ->execute([
+              (int)$store['id'],
+              $storeCustomerId,
+              $method,
+              $itemsTotal,
+              $grand,
+              $sellerFee,
+              $mpExtra,
+              $customerEmail,
+              $customerFirst,
+              $customerLast,
+              $customerPhone,
+              $customerPostal,
+              $customerStreet,
+              $customerStreetNumber,
+              $customerStreetNumberSn,
+              $customerApartment !== '' ? $customerApartment : null,
+              $customerNeighborhood !== '' ? $customerNeighborhood : null,
+              $customerDocument
+            ]);
         $orderId = (int)$pdo->lastInsertId();
+
+        if ($customer) {
+          $pdo->prepare("UPDATE store_customers
+                        SET email=?, first_name=?, last_name=?, phone=?, postal_code=?, street=?, street_number=?, street_number_sn=?, apartment=?, neighborhood=?, document_id=?
+                        WHERE id=? AND store_id=?")
+              ->execute([
+                $customerEmail,
+                $customerFirst,
+                $customerLast,
+                $customerPhone,
+                $customerPostal,
+                $customerStreet,
+                $customerStreetNumber,
+                $customerStreetNumberSn,
+                $customerApartment !== '' ? $customerApartment : null,
+                $customerNeighborhood !== '' ? $customerNeighborhood : null,
+                $customerDocument,
+                (int)$customer['id'],
+                (int)$store['id']
+              ]);
+          $updated = store_customer_find($pdo, (int)$store['id'], $customerEmail);
+          if ($updated) store_customer_set_session($updated, (int)$store['id']);
+        }
 
         $providerFeeTotal = 0.0;
 
@@ -157,6 +256,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST') {
   }
 }
 
+$GLOBALS['STORE_AUTH_HTML'] = store_auth_links($store, $BASE, $slug, $customer);
 page_header("Checkout - ".$store['name']);
 if (!empty($err)) echo "<p style='color:#b00'>".h($err)."</p>";
 echo "<p><a href='".$BASE.$slug."/'>← volver</a></p>";
@@ -177,12 +277,41 @@ echo "<p><b>Forma de entrega:</b> ".h($deliverySelectedMethod['name'])." - ".h($
 echo "<p><b>Total:</b> $".number_format($itemsTotal,2,',','.')."</p>";
 echo "<p><b>Total final:</b> $".number_format($grandTotal,2,',','.')."</p>";
 
-echo "<h3>Medio de pago</h3><form method='post'>
+echo "<h3>Datos del cliente</h3>";
+echo "<form method='post'>
 <input type='hidden' name='csrf' value='".h(csrf_token())."'>
+<p><label>Email<br><input type='email' name='email' value='".h($formData['email'])."'></label></p>
+<p><label>Nombre<br><input type='text' name='first_name' value='".h($formData['first_name'])."'></label></p>
+<p><label>Apellido<br><input type='text' name='last_name' value='".h($formData['last_name'])."'></label></p>
+<p><label>Teléfono<br><input type='text' name='phone' value='".h($formData['phone'])."'></label></p>
+<p><label>Código postal<br><input type='text' name='postal_code' value='".h($formData['postal_code'])."' maxlength='4' inputmode='numeric' pattern='\\d{1,4}'></label></p>
+<p><label>Calle<br><input type='text' name='street' value='".h($formData['street'])."'></label></p>
+<p><label>Número<br><input id='street_number' type='text' name='street_number' value='".h($formData['street_number'])."'></label>
+<label><input id='street_number_sn' type='checkbox' name='street_number_sn' value='1'".($formData['street_number_sn'] ? " checked" : "")."> Sin número</label></p>
+<p><label>Departamento (opcional)<br><input type='text' name='apartment' value='".h($formData['apartment'])."'></label></p>
+<p><label>Barrio (opcional)<br><input type='text' name='neighborhood' value='".h($formData['neighborhood'])."'></label></p>
+<p><label>DNI o CUIT<br><input type='text' name='document_id' value='".h($formData['document_id'])."'></label></p>
+<h3>Medio de pago</h3>
 <select name='payment_method'>";
 foreach($payMethods as $m){
   echo "<option value='".h($m['method'])."'>".h($m['method'])."</option>";
 }
-echo "</select> <button>Confirmar</button></form>";
+echo "</select> <button>Confirmar</button></form>
+<script>
+const snBox = document.getElementById('street_number_sn');
+const snInput = document.getElementById('street_number');
+if (snBox && snInput) {
+  const toggleSn = () => {
+    if (snBox.checked) {
+      snInput.value = '';
+      snInput.disabled = true;
+    } else {
+      snInput.disabled = false;
+    }
+  };
+  snBox.addEventListener('change', toggleSn);
+  toggleSn();
+}
+</script>";
 
 page_footer();
