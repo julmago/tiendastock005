@@ -20,12 +20,14 @@ $cart = $_SESSION[$cartKey] ?? [];
 if (!$cart) { header("Location: ".$BASE.$slug."/"); exit; }
 
 $deliveryKey = 'delivery_'.$store['id'];
-$deliveryMethods = [
-  'retiro' => 'Retiro en tienda',
-  'envio' => 'Envío a domicilio',
-];
-$deliverySelected = (string)($_SESSION[$deliveryKey] ?? '');
-if (!$deliverySelected || !array_key_exists($deliverySelected, $deliveryMethods)) {
+$deliveryRows = $pdo->query("SELECT id, name, delivery_time, price FROM delivery_methods WHERE status='active' ORDER BY position ASC, id ASC")->fetchAll();
+$deliveryMethods = [];
+foreach ($deliveryRows as $row) {
+  $deliveryMethods[(int)$row['id']] = $row;
+}
+$deliverySelected = (int)($_SESSION[$deliveryKey] ?? 0);
+$deliverySelectedMethod = $deliverySelected ? ($deliveryMethods[$deliverySelected] ?? null) : null;
+if (!$deliverySelectedMethod) {
   header("Location: ".$BASE.$slug."/?delivery_error=1"); exit;
 }
 
@@ -67,7 +69,8 @@ if ($_SERVER['REQUEST_METHOD']==='POST') {
 
       $sellerFee = $itemsTotal * ($sellerFeePercent/100.0);
       $mpExtra = ($method==='mercadopago') ? ($itemsTotal * ($extraPercent/100.0)) : 0.0;
-      $grand = $itemsTotal + $mpExtra;
+      $deliveryPrice = (float)$deliverySelectedMethod['price'];
+      $grand = $itemsTotal + $mpExtra + $deliveryPrice;
 
       $pdo->beginTransaction();
       try {
@@ -167,7 +170,12 @@ foreach($cart as $pid=>$qty){
   $itemsTotal += $sub;
   echo "<li>".h($p['title'])." x ".h((string)$qty)." = $".number_format($sub,2,',','.')."</li>";
 }
-echo "</ul><p><b>Total:</b> $".number_format($itemsTotal,2,',','.')."</p>";
+$deliveryPrice = (float)$deliverySelectedMethod['price'];
+$grandTotal = $itemsTotal + $deliveryPrice;
+echo "</ul>";
+echo "<p><b>Forma de entrega:</b> ".h($deliverySelectedMethod['name'])." - ".h($deliverySelectedMethod['delivery_time'])." ($".number_format($deliveryPrice,2,',','.').")</p>";
+echo "<p><b>Total:</b> $".number_format($itemsTotal,2,',','.')."</p>";
+echo "<p><b>Total final:</b> $".number_format($grandTotal,2,',','.')."</p>";
 
 echo "<h3>Medio de pago</h3><form method='post'>
 <input type='hidden' name='csrf' value='".h(csrf_token())."'>
