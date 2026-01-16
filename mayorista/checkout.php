@@ -19,6 +19,16 @@ $cartKey = 'cart_'.$store['id'];
 $cart = $_SESSION[$cartKey] ?? [];
 if (!$cart) { header("Location: ".$BASE.$slug."/"); exit; }
 
+$deliveryKey = 'delivery_'.$store['id'];
+$deliveryMethods = [
+  'retiro' => 'Retiro en tienda',
+  'envio' => 'Envío a domicilio',
+];
+$deliverySelected = (string)($_SESSION[$deliveryKey] ?? '');
+if (!$deliverySelected || !array_key_exists($deliverySelected, $deliveryMethods)) {
+  header("Location: ".$BASE.$slug."/?delivery_error=1"); exit;
+}
+
 $ids = array_keys($cart);
 $in = implode(",", array_fill(0, count($ids), "?"));
 $stc = $pdo->prepare("SELECT * FROM store_products WHERE id IN ($in)");
