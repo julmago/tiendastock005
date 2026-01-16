@@ -15,7 +15,7 @@ $st->execute([$slug, $STORE_TYPE]);
 $store = $st->fetch();
 if (!$store) { http_response_code(404); exit('Tienda no encontrada'); }
 
-$customer = store_customer_current($pdo, (int)$store['id']);
+$customer = store_customer_current($pdo);
 if ($customer) { header("Location: ".$BASE.$slug."/"); exit; }
 
 if ($_SERVER['REQUEST_METHOD']==='POST') {
@@ -24,11 +24,11 @@ if ($_SERVER['REQUEST_METHOD']==='POST') {
   if ($email === '' || $password === '') {
     $err = "Completá email y contraseña.";
   } else {
-    $login = store_customer_login($pdo, (int)$store['id'], $email, $password);
+    $login = store_customer_login($pdo, $email, $password);
     if (!$login) {
       $err = "Credenciales inválidas.";
     } else {
-      store_customer_set_session($login, (int)$store['id']);
+      store_customer_set_session($login);
       header("Location: ".$BASE.$slug."/"); exit;
     }
   }

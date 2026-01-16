@@ -11,7 +11,7 @@ if ($slug) {
   $st->execute([$slug, $STORE_TYPE]);
   $store = $st->fetch();
   if ($store) {
-    store_customer_logout((int)$store['id']);
+    store_customer_logout();
     header("Location: ".$BASE.$slug."/"); exit;
   }
 }

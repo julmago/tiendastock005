@@ -139,7 +139,7 @@ CREATE TABLE IF NOT EXISTS store_customers (
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  UNIQUE KEY uq_store_customers_email (store_id, email),
+  UNIQUE KEY uq_store_customers_email (email),
   KEY idx_store_customers_store (store_id),
   CONSTRAINT fk_store_customers_store FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

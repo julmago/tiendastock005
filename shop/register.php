@@ -15,7 +15,7 @@ $st->execute([$slug, $STORE_TYPE]);
 $store = $st->fetch();
 if (!$store) { http_response_code(404); exit('Tienda no encontrada'); }
 
-$customer = store_customer_current($pdo, (int)$store['id']);
+$customer = store_customer_current($pdo);
 if ($customer) { header("Location: ".$BASE.$slug."/"); exit; }
 
 $formData = [
@@ -64,9 +64,19 @@ if ($_SERVER['REQUEST_METHOD']==='POST') {
     $err = "Ingresá el número de tu domicilio o marcá Sin número.";
   } elseif ($documentId === '') {
     $err = "Ingresá DNI o CUIT.";
-  } elseif (store_customer_find($pdo, (int)$store['id'], $email)) {
-    $err = "Ya existe una cuenta con ese email.";
   } else {
+    $existing = store_customer_find($pdo, $email);
+    if ($existing) {
+      $login = store_customer_login($pdo, $email, $password);
+      if (!$login) {
+        $err = "Ya existe una cuenta con ese email. Iniciá sesión.";
+      } else {
+        store_customer_set_session($login);
+        header("Location: ".$BASE.$slug."/"); exit;
+      }
+    }
+  }
+  if (empty($err)) {
     $pdo->prepare("INSERT INTO store_customers(store_id,email,password_hash,first_name,last_name,phone,postal_code,street,street_number,street_number_sn,apartment,neighborhood,document_id)
                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)")
         ->execute([
@@ -85,9 +95,9 @@ if ($_SERVER['REQUEST_METHOD']==='POST') {
           $documentId
         ]);
     $newId = (int)$pdo->lastInsertId();
-    $customer = store_customer_find($pdo, (int)$store['id'], $email);
+    $customer = store_customer_find($pdo, $email);
     if ($customer) {
-      store_customer_set_session($customer, (int)$store['id']);
+      store_customer_set_session($customer);
       header("Location: ".$BASE.$slug."/"); exit;
     }
   }

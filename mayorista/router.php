@@ -32,10 +32,10 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['postal_code'])) {
     $postalErr = "Ingresá un código postal válido (solo números, hasta 4).";
   } else {
     $_SESSION[$postalKey] = $postal;
-    $customer = store_customer_current($pdo, (int)$store['id']);
+    $customer = store_customer_current($pdo);
     if ($customer) {
-      $pdo->prepare("UPDATE store_customers SET postal_code=? WHERE id=? AND store_id=?")
-          ->execute([$postal, (int)$customer['id'], (int)$store['id']]);
+      $pdo->prepare("UPDATE store_customers SET postal_code=? WHERE id=?")
+          ->execute([$postal, (int)$customer['id']]);
     }
     header("Location: ".$BASE.$slug."/"); exit;
   }
@@ -62,7 +62,7 @@ if (isset($_GET['del'])) {
   header("Location: ".$BASE.$slug."/"); exit;
 }
 
-$customer = store_customer_current($pdo, (int)$store['id']);
+$customer = store_customer_current($pdo);
 $customerProfileComplete = false;
 if ($customer) {
   $customerStreetNumberSn = (int)($customer['street_number_sn'] ?? 0) === 1;
