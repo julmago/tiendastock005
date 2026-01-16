@@ -133,6 +133,20 @@ CREATE TABLE IF NOT EXISTS store_payment_methods (
   CONSTRAINT fk_spm_store FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS delivery_methods (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  name VARCHAR(190) NOT NULL,
+  delivery_time VARCHAR(190) NOT NULL,
+  price DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  status ENUM('active','inactive') NOT NULL DEFAULT 'inactive',
+  position INT NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_delivery_status (status),
+  KEY idx_delivery_position (position)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS store_products (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   store_id BIGINT UNSIGNED NOT NULL,
