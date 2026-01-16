@@ -212,6 +212,10 @@ CREATE TABLE IF NOT EXISTS orders (
   seller_fee_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
   provider_fee_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
   mp_extra_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  delivery_method_id BIGINT UNSIGNED NULL,
+  delivery_name VARCHAR(190) NULL,
+  delivery_time VARCHAR(190) NULL,
+  delivery_price DECIMAL(12,2) NOT NULL DEFAULT 0.00,
   customer_email VARCHAR(190) NOT NULL,
   customer_first_name VARCHAR(120) NOT NULL,
   customer_last_name VARCHAR(120) NOT NULL,
@@ -228,8 +232,10 @@ CREATE TABLE IF NOT EXISTS orders (
   PRIMARY KEY (id),
   KEY idx_orders_store (store_id),
   KEY idx_orders_store_customer (store_customer_id),
+  KEY idx_orders_delivery_method (delivery_method_id),
   CONSTRAINT fk_orders_store FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE RESTRICT,
-  CONSTRAINT fk_orders_store_customer FOREIGN KEY (store_customer_id) REFERENCES store_customers(id) ON DELETE SET NULL
+  CONSTRAINT fk_orders_store_customer FOREIGN KEY (store_customer_id) REFERENCES store_customers(id) ON DELETE SET NULL,
+  CONSTRAINT fk_orders_delivery_method FOREIGN KEY (delivery_method_id) REFERENCES delivery_methods(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS order_items (

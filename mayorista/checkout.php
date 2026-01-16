@@ -1,6 +1,7 @@
 <?php
 require __DIR__.'/../config.php';
 require __DIR__.'/../_inc/layout.php';
+require __DIR__.'/../_inc/orders.php';
 require __DIR__.'/../_inc/pricing.php';
 require __DIR__.'/../_inc/store_auth.php';
 csrf_check();
@@ -131,29 +132,33 @@ if ($_SERVER['REQUEST_METHOD']==='POST') {
       $pdo->beginTransaction();
       try {
         $storeCustomerId = $customer ? (int)$customer['id'] : null;
-        $pdo->prepare("INSERT INTO orders(store_id,store_customer_id,status,payment_method,payment_status,items_total,grand_total,seller_fee_amount,provider_fee_amount,mp_extra_amount,customer_email,customer_first_name,customer_last_name,customer_phone,customer_postal_code,customer_street,customer_street_number,customer_street_number_sn,customer_apartment,customer_neighborhood,customer_document_id)
-                      VALUES(?, ?, 'created', ?, 'pending', ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-            ->execute([
-              (int)$store['id'],
-              $storeCustomerId,
-              $method,
-              $itemsTotal,
-              $grand,
-              $sellerFee,
-              $mpExtra,
-              $customerEmail,
-              $customerFirst,
-              $customerLast,
-              $customerPhone,
-              $customerPostal,
-              $customerStreet,
-              $customerStreetNumber,
-              $customerStreetNumberSn,
-              $customerApartment !== '' ? $customerApartment : null,
-              $customerNeighborhood !== '' ? $customerNeighborhood : null,
-              $customerDocument
-            ]);
-        $orderId = (int)$pdo->lastInsertId();
+        $orderId = store_insert_order($pdo, [
+          'store_id' => (int)$store['id'],
+          'store_customer_id' => $storeCustomerId,
+          'status' => 'created',
+          'payment_method' => $method,
+          'payment_status' => 'pending',
+          'items_total' => $itemsTotal,
+          'grand_total' => $grand,
+          'seller_fee_amount' => $sellerFee,
+          'provider_fee_amount' => 0,
+          'mp_extra_amount' => $mpExtra,
+          'customer_email' => $customerEmail,
+          'customer_first_name' => $customerFirst,
+          'customer_last_name' => $customerLast,
+          'customer_phone' => $customerPhone,
+          'customer_postal_code' => $customerPostal,
+          'customer_street' => $customerStreet,
+          'customer_street_number' => $customerStreetNumber,
+          'customer_street_number_sn' => $customerStreetNumberSn,
+          'customer_apartment' => $customerApartment !== '' ? $customerApartment : null,
+          'customer_neighborhood' => $customerNeighborhood !== '' ? $customerNeighborhood : null,
+          'customer_document_id' => $customerDocument,
+          'delivery_method_id' => $deliverySelected,
+          'delivery_name' => (string)$deliverySelectedMethod['name'],
+          'delivery_time' => (string)$deliverySelectedMethod['delivery_time'],
+          'delivery_price' => $deliveryPrice,
+        ]);
 
         if ($customer) {
           $pdo->prepare("UPDATE store_customers
