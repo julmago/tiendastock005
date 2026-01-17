@@ -92,10 +92,16 @@ if ($edit_id > 0) {
   $product_images = product_images_fetch($pdo, 'provider_product', $edit_id);
 }
 
-$rows = $pdo->prepare("SELECT p.id, p.title, p.sku, p.universal_code, p.base_price, i.filename_base AS cover_image
+$rows = $pdo->prepare("SELECT p.id, p.title, p.sku, p.universal_code, p.base_price, i.filename_base AS cover_image,
+    COALESCE(ws.qty_available,0) AS qty_available,
+    COALESCE(ws.qty_reserved,0) AS qty_reserved,
+    COALESCE(SUM(oa.qty_allocated),0) AS qty_sold
   FROM provider_products p
   LEFT JOIN product_images i ON i.owner_type='provider_product' AND i.owner_id=p.id AND i.position=1
+  LEFT JOIN warehouse_stock ws ON ws.provider_product_id=p.id
+  LEFT JOIN order_allocations oa ON oa.provider_product_id=p.id
   WHERE p.provider_id=?
+  GROUP BY p.id, p.title, p.sku, p.universal_code, p.base_price, i.filename_base, ws.qty_available, ws.qty_reserved
   ORDER BY p.id DESC");
 $rows->execute([(int)$p['id']]);
 $list = $rows->fetchAll();
@@ -215,9 +221,10 @@ echo "
 }
 
 if ($view === 'list') {
-echo "<table border='1' cellpadding='6' cellspacing='0'><tr><th>Imagen</th><th>Título</th><th>SKU</th><th>Código universal</th><th>Base</th></tr>";
+echo "<table border='1' cellpadding='6' cellspacing='0'><tr><th>Imagen</th><th>Título</th><th>SKU</th><th>Código universal</th><th>Base</th><th>Disp</th><th>Res</th><th>Ventas</th><th>Acciones</th></tr>";
 foreach($list as $r){
   $url = "/proveedor/catalogo.php?id=".h((string)$r['id']);
+  $ventasUrl = "/proveedor/stock_ventas.php?id=".h((string)$r['id']);
   if (!empty($r['cover_image'])) {
     $thumb = product_image_with_size($r['cover_image'], 150);
     $thumb_url = "/uploads/provider_products/".h((string)$r['id'])."/".h($thumb);
@@ -225,7 +232,7 @@ foreach($list as $r){
   } else {
     $image_cell = "—";
   }
-  echo "<tr><td>".$image_cell."</td><td><a href='".$url."'>".h($r['title'])."</a></td><td>".h($r['sku']??'')."</td><td>".h($r['universal_code']??'')."</td><td>".h((string)$r['base_price'])."</td></tr>";
+  echo "<tr><td>".$image_cell."</td><td><a href='".$url."'>".h($r['title'])."</a></td><td>".h($r['sku']??'')."</td><td>".h($r['universal_code']??'')."</td><td>".h((string)$r['base_price'])."</td><td>".h((string)$r['qty_available'])."</td><td>".h((string)$r['qty_reserved'])."</td><td>".h((string)$r['qty_sold'])."</td><td><a href='".$url."'>Modificar</a> | <a href='".$ventasUrl."'>Ventas</a></td></tr>";
 }
 echo "</table>";
 }
