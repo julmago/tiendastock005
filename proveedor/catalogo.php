@@ -83,9 +83,13 @@ foreach ($flatCategories as $cat) {
 }
 
 $variantHandled = false;
-if ($role === 'superadmin' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+$canManageVariants = in_array($role, ['superadmin', 'provider'], true);
+if ($canManageVariants && $_SERVER['REQUEST_METHOD'] === 'POST') {
   $variantAction = $_POST['action'] ?? '';
-  if (in_array($variantAction, ['add_variant', 'update_variant', 'delete_variant', 'move_variant'], true)) {
+  $allowedActions = $role === 'superadmin'
+    ? ['add_variant', 'update_variant', 'delete_variant', 'move_variant']
+    : ['add_variant', 'update_variant', 'delete_variant'];
+  if (in_array($variantAction, $allowedActions, true)) {
     $variantHandled = true;
     $product_id = (int)($_POST['product_id'] ?? 0);
     $edit_id = $product_id;
@@ -100,17 +104,28 @@ if ($role === 'superadmin' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if (empty($err)) {
+      if ($role !== 'superadmin' && $providerStatus !== 'active') {
+        $err = "Cuenta pendiente de aprobación.";
+      }
+    }
+
+    if (empty($err)) {
       if ($variantAction === 'add_variant') {
         $colorId = (int)($_POST['color_id'] ?? 0);
-        $stockQty = (int)($_POST['stock_qty'] ?? 0);
+        $stockQty = $role === 'superadmin' ? (int)($_POST['stock_qty'] ?? 0) : 0;
         $skuVariant = trim((string)($_POST['sku_variant'] ?? ''));
         $imageCover = trim((string)($_POST['image_cover'] ?? ''));
         $imageValue = $imageCover === '' ? null : $imageCover;
         if ($colorId <= 0) {
           $err = "Color inválido.";
         } else {
-          $colorSt = $pdo->prepare("SELECT id FROM colors WHERE id=? LIMIT 1");
-          $colorSt->execute([$colorId]);
+          if ($role === 'superadmin') {
+            $colorSt = $pdo->prepare("SELECT id FROM colors WHERE id=? LIMIT 1");
+            $colorSt->execute([$colorId]);
+          } else {
+            $colorSt = $pdo->prepare("SELECT id FROM colors WHERE id=? AND active=1 LIMIT 1");
+            $colorSt->execute([$colorId]);
+          }
           if (!$colorSt->fetch()) {
             $err = "Color inválido.";
           }
@@ -137,19 +152,28 @@ if ($role === 'superadmin' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         }
       } elseif ($variantAction === 'update_variant') {
         $variantId = (int)($_POST['variant_id'] ?? 0);
-        $stockQty = (int)($_POST['stock_qty'] ?? 0);
         $skuVariant = trim((string)($_POST['sku_variant'] ?? ''));
         $imageCover = trim((string)($_POST['image_cover'] ?? ''));
         $imageValue = $imageCover === '' ? null : $imageCover;
         if ($variantId <= 0) {
           $err = "Variante inválida.";
         } else {
-          $updateSt = $pdo->prepare("
-            UPDATE product_variants
-            SET sku_variant=?, stock_qty=?, image_cover=?
-            WHERE id=? AND owner_type='provider' AND owner_id=? AND product_id=?
-          ");
-          $updateSt->execute([$skuVariant ?: null, $stockQty, $imageValue, $variantId, $providerId, $product_id]);
+          if ($role === 'superadmin') {
+            $stockQty = (int)($_POST['stock_qty'] ?? 0);
+            $updateSt = $pdo->prepare("
+              UPDATE product_variants
+              SET sku_variant=?, stock_qty=?, image_cover=?
+              WHERE id=? AND owner_type='provider' AND owner_id=? AND product_id=?
+            ");
+            $updateSt->execute([$skuVariant ?: null, $stockQty, $imageValue, $variantId, $providerId, $product_id]);
+          } else {
+            $updateSt = $pdo->prepare("
+              UPDATE product_variants
+              SET sku_variant=?, image_cover=?
+              WHERE id=? AND owner_type='provider' AND owner_id=? AND product_id=?
+            ");
+            $updateSt->execute([$skuVariant ?: null, $imageValue, $variantId, $providerId, $product_id]);
+          }
           if ($updateSt->rowCount() === 0) {
             $err = "Variante inválida.";
           } else {
@@ -169,7 +193,7 @@ if ($role === 'superadmin' && $_SERVER['REQUEST_METHOD'] === 'POST') {
             $msg = "Variante eliminada.";
           }
         }
-      } elseif ($variantAction === 'move_variant') {
+      } elseif ($variantAction === 'move_variant' && $role === 'superadmin') {
         $variantId = (int)($_POST['variant_id'] ?? 0);
         $direction = $_POST['direction'] ?? '';
         if ($variantId <= 0 || !in_array($direction, ['up', 'down'], true)) {
@@ -306,7 +330,7 @@ if ($edit_id > 0) {
 if ($role === 'superadmin') {
   $colors = $pdo->query("SELECT id, name, active FROM colors ORDER BY name ASC, id ASC")->fetchAll();
 } else {
-  $colors = [];
+  $colors = $pdo->query("SELECT id, name, active FROM colors WHERE active=1 ORDER BY name ASC, id ASC")->fetchAll();
 }
 
 $rows = $pdo->prepare("SELECT p.id, p.title, p.sku, p.universal_code, p.base_price, i.filename_base AS cover_image,
@@ -387,6 +411,8 @@ if (!$variantRows) {
   <tr><th>Color</th><th>SKU</th><th>Stock</th>";
   if ($role === 'superadmin') {
     echo "<th>Imagen</th><th>Orden</th><th>Acciones</th>";
+  } else {
+    echo "<th>Imagen</th><th>Acciones</th>";
   }
   echo "</tr>";
   foreach ($variantRows as $variant) {
@@ -437,14 +463,34 @@ if (!$variantRows) {
         </form>
       </td>";
     } else {
-      echo "<td>".h((string)$skuVariant)."</td>
-      <td>".h((string)$variant['stock_qty'])."</td>";
+      $formId = "variant-update-".(int)$variant['id'];
+      echo "<td><input name='sku_variant' value='".h((string)($variant['sku_variant'] ?? ''))."' style='width:140px' form='".h($formId)."'></td>
+      <td><input name='stock_qty' value='".h((string)$variant['stock_qty'])."' style='width:80px' readonly form='".h($formId)."'></td>
+      <td><input name='image_cover' value='".h((string)($variant['image_cover'] ?? ''))."' style='width:180px' form='".h($formId)."'></td>
+      <td>
+        <form method='post' id='".h($formId)."' style='margin:0; display:inline;'>
+          <input type='hidden' name='csrf' value='".h(csrf_token())."'>
+          <input type='hidden' name='action' value='update_variant'>
+          <input type='hidden' name='product_id' value='".h((string)$edit_id)."'>
+          <input type='hidden' name='provider_id' value='".h((string)$providerId)."'>
+          <input type='hidden' name='variant_id' value='".h((string)$variant['id'])."'>
+          <button>Guardar</button>
+        </form>
+        <form method='post' style='margin:0; display:inline;' onsubmit='return confirm(\"¿Eliminar variante?\")'>
+          <input type='hidden' name='csrf' value='".h(csrf_token())."'>
+          <input type='hidden' name='action' value='delete_variant'>
+          <input type='hidden' name='product_id' value='".h((string)$edit_id)."'>
+          <input type='hidden' name='provider_id' value='".h((string)$providerId)."'>
+          <input type='hidden' name='variant_id' value='".h((string)$variant['id'])."'>
+          <button>Eliminar</button>
+        </form>
+      </td>";
     }
     echo "</tr>";
   }
   echo "</table>";
 }
-if ($role === 'superadmin') {
+if ($role === 'superadmin' || $role === 'provider') {
   echo "<h4>Agregar variante</h4>
   <form method='post'>
     <input type='hidden' name='csrf' value='".h(csrf_token())."'>
@@ -456,13 +502,13 @@ if ($role === 'superadmin') {
         <option value='0'>-- elegir --</option>";
   foreach ($colors as $color) {
     $colorLabel = $color['name'];
-    if ((int)$color['active'] !== 1) {
+    if ($role === 'superadmin' && (int)$color['active'] !== 1) {
       $colorLabel .= " (inactivo)";
     }
     echo "<option value='".h((string)$color['id'])."'>".h($colorLabel)."</option>";
   }
   echo "</select></p>
-    <p>Stock: <input name='stock_qty' style='width:80px'></p>
+    <p>Stock: <input name='stock_qty' style='width:80px' value='".($role === 'superadmin' ? '' : '0')."' ".($role === 'superadmin' ? '' : "readonly")."></p>
     <p>SKU: <input name='sku_variant' style='width:180px'></p>
     <p>Imagen: <input name='image_cover' style='width:220px'></p>
     <button>Agregar</button>
