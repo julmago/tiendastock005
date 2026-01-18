@@ -25,10 +25,21 @@ $params = [$like, $like, $like];
 $sql = "
   SELECT pp.id, pp.title, pp.sku, pp.universal_code, pp.description, pp.base_price,
          p.display_name AS provider_name,
-         COALESCE(SUM(GREATEST(ws.qty_available - ws.qty_reserved,0)),0) AS stock
+         COALESCE(SUM(
+           CASE
+             WHEN pv.variant_count > 0 THEN pv.variant_stock
+             ELSE GREATEST(ws.qty_available - ws.qty_reserved,0)
+           END
+         ),0) AS stock
   FROM provider_products pp
   JOIN providers p ON p.id=pp.provider_id
   LEFT JOIN warehouse_stock ws ON ws.provider_product_id = pp.id
+  LEFT JOIN (
+    SELECT product_id, owner_id, COUNT(*) AS variant_count, COALESCE(SUM(stock_qty),0) AS variant_stock
+    FROM product_variants
+    WHERE owner_type='provider'
+    GROUP BY product_id, owner_id
+  ) pv ON pv.product_id = pp.id AND pv.owner_id = pp.provider_id
   WHERE pp.status='active' AND p.status='active'
     AND (pp.title LIKE ? OR pp.sku LIKE ? OR pp.universal_code LIKE ?)
   GROUP BY pp.id, pp.title, pp.sku, pp.universal_code, pp.description, pp.base_price, p.display_name

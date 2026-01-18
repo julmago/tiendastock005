@@ -113,7 +113,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST') {
       if (!$p) continue;
       $price = current_sell_price($pdo, $store, $p);
       if ($price <= 0) { $err="El producto '".$p['title']."' no tiene stock."; break; }
-      $stock = provider_stock_sum($pdo, (int)$p['id']) + (int)$p['own_stock_qty'];
+      $stock = store_product_stock_total($pdo, (int)$store['id'], $p);
       if ($stock < (int)$qty) { $err="Stock insuficiente para '".$p['title']."'."; break; }
       $itemsTotal += ($price * (int)$qty);
       $lines[] = ['pid'=>(int)$pid,'qty'=>(int)$qty,'price'=>$price,'title'=>$p['title']];

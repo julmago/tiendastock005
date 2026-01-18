@@ -92,8 +92,7 @@ else {
   echo "<table border='1' cellpadding='6' cellspacing='0'><tr><th>Título</th><th>Precio</th><th>Stock</th><th></th></tr>";
   foreach($products as $p){
     $price = current_sell_price($pdo, $store, $p);
-    $provStock = provider_stock_sum($pdo, (int)$p['id']);
-    $stock = $provStock + (int)$p['own_stock_qty'];
+    $stock = store_product_stock_total($pdo, (int)$store['id'], $p);
     $priceTxt = $price>0 ? "$".number_format($price,2,',','.') : "Sin stock";
     echo "<tr>
       <td>".h($p['title'])."</td>
