@@ -14,6 +14,31 @@ if (!$seller) exit('Seller inválido');
 $productId = (int)($_GET['id'] ?? 0);
 if (!$productId) { page_header('Producto'); echo "<p>Producto inválido.</p>"; page_footer(); exit; }
 
+$categoryRows = $pdo->query("SELECT id, parent_id, name FROM categories ORDER BY name ASC, id ASC")->fetchAll();
+$categoriesByParent = [];
+foreach ($categoryRows as $cat) {
+  $parentId = $cat['parent_id'] ? (int)$cat['parent_id'] : 0;
+  $categoriesByParent[$parentId][] = $cat;
+}
+
+function flatten_categories(array $byParent, int $parentId, int $depth, array &$flat): void {
+  if (empty($byParent[$parentId])) {
+    return;
+  }
+  foreach ($byParent[$parentId] as $cat) {
+    $cat['depth'] = $depth;
+    $flat[] = $cat;
+    flatten_categories($byParent, (int)$cat['id'], $depth + 1, $flat);
+  }
+}
+
+$flatCategories = [];
+flatten_categories($categoriesByParent, 0, 0, $flatCategories);
+$categoryIdSet = [];
+foreach ($flatCategories as $cat) {
+  $categoryIdSet[(int)$cat['id']] = true;
+}
+
 $productSt = $pdo->prepare("SELECT sp.*, s.name AS store_name, s.store_type, s.markup_percent, s.id AS store_id
   FROM store_products sp
   JOIN stores s ON s.id=sp.store_id
@@ -34,12 +59,15 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '') === 'update_
   $sku = trim((string)($_POST['sku'] ?? ''));
   $universalCode = trim((string)($_POST['universal_code'] ?? ''));
   $description = trim((string)($_POST['description'] ?? ''));
+  $categoryId = (int)($_POST['category_id'] ?? 0);
+  $categoryValue = $categoryId > 0 ? $categoryId : null;
 
   if (!$title) $err = "Falta título.";
   elseif ($universalCode !== '' && !preg_match('/^\d{8,14}$/', $universalCode)) $err = "El código universal debe tener entre 8 y 14 números.";
+  elseif ($categoryValue !== null && empty($categoryIdSet[$categoryId])) $err = "Categoría inválida.";
   else {
-    $pdo->prepare("UPDATE store_products SET title=?, sku=?, universal_code=?, description=? WHERE id=? AND store_id=?")
-        ->execute([$title, $sku?:null, $universalCode?:null, $description?:null, $productId, $storeId]);
+    $pdo->prepare("UPDATE store_products SET title=?, sku=?, universal_code=?, description=?, category_id=? WHERE id=? AND store_id=?")
+        ->execute([$title, $sku?:null, $universalCode?:null, $description?:null, $categoryValue, $productId, $storeId]);
     $msg = "Producto actualizado.";
   }
 }
@@ -164,6 +192,16 @@ echo "<h3>Editar producto</h3>
     <input id='universal-code-input' name='universal_code' value='".h((string)($product['universal_code']??''))."' style='width:220px'>
     <button type='button' id='btnSearchByUniversal'>Buscar producto</button>
   </span>
+</p>
+<p>Categoría:
+  <select name='category_id'>
+    <option value='0'".(empty($product['category_id']) ? ' selected' : '').">Sin categoría</option>";
+foreach ($flatCategories as $cat) {
+  $indent = str_repeat('— ', (int)$cat['depth']);
+  $selected = ((int)($product['category_id'] ?? 0) === (int)$cat['id']) ? ' selected' : '';
+  echo "<option value='".h((string)$cat['id'])."'".$selected.">".$indent.h($cat['name'])."</option>";
+}
+echo "</select>
 </p>
 <p>Descripción:<br><textarea name='description' rows='4' style='width:90%'>".h((string)($product['description']??''))."</textarea></p>
 <button>Guardar cambios</button>

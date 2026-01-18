@@ -37,6 +37,19 @@ CREATE TABLE IF NOT EXISTS providers (
   CONSTRAINT fk_providers_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS categories (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  parent_id BIGINT UNSIGNED NULL,
+  name VARCHAR(190) NOT NULL,
+  status ENUM('active','inactive') NOT NULL DEFAULT 'active',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_categories_parent (parent_id),
+  KEY idx_categories_status (status),
+  CONSTRAINT fk_categories_parent FOREIGN KEY (parent_id) REFERENCES categories(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS provider_products (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   provider_id BIGINT UNSIGNED NOT NULL,
@@ -44,13 +57,16 @@ CREATE TABLE IF NOT EXISTS provider_products (
   sku VARCHAR(120) NULL,
   universal_code VARCHAR(14) NULL,
   description TEXT NULL,
+  category_id BIGINT UNSIGNED NULL,
   base_price DECIMAL(12,2) NOT NULL,
   status ENUM('active','inactive') NOT NULL DEFAULT 'active',
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   KEY idx_pp_provider (provider_id),
-  CONSTRAINT fk_pp_provider FOREIGN KEY (provider_id) REFERENCES providers(id) ON DELETE CASCADE
+  KEY idx_pp_category (category_id),
+  CONSTRAINT fk_pp_provider FOREIGN KEY (provider_id) REFERENCES providers(id) ON DELETE CASCADE,
+  CONSTRAINT fk_pp_category FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS product_images (
@@ -170,19 +186,6 @@ CREATE TABLE IF NOT EXISTS delivery_methods (
   KEY idx_delivery_position (position)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE IF NOT EXISTS categories (
-  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  parent_id BIGINT UNSIGNED NULL,
-  name VARCHAR(190) NOT NULL,
-  status ENUM('active','inactive') NOT NULL DEFAULT 'active',
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at DATETIME NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (id),
-  KEY idx_categories_parent (parent_id),
-  KEY idx_categories_status (status),
-  CONSTRAINT fk_categories_parent FOREIGN KEY (parent_id) REFERENCES categories(id) ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
 CREATE TABLE IF NOT EXISTS store_products (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   store_id BIGINT UNSIGNED NOT NULL,
@@ -190,6 +193,7 @@ CREATE TABLE IF NOT EXISTS store_products (
   sku VARCHAR(120) NULL,
   universal_code VARCHAR(14) NULL,
   description TEXT NULL,
+  category_id BIGINT UNSIGNED NULL,
   status ENUM('active','inactive') NOT NULL DEFAULT 'active',
   own_stock_qty INT NOT NULL DEFAULT 0,
   own_stock_price DECIMAL(12,2) NULL,
@@ -198,7 +202,9 @@ CREATE TABLE IF NOT EXISTS store_products (
   updated_at DATETIME NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   KEY idx_sp_store (store_id),
-  CONSTRAINT fk_sp_store FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE CASCADE
+  KEY idx_sp_category (category_id),
+  CONSTRAINT fk_sp_store FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE CASCADE,
+  CONSTRAINT fk_sp_category FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS store_product_sources (
