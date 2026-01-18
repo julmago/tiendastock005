@@ -533,6 +533,93 @@ echo "</select>
 </p>
 <p>Descripción:<br><textarea name='description' rows='3' style='width:90%'>".h($edit_product['description'] ?? '')."</textarea></p>
 <fieldset>
+<legend>Imágenes</legend>
+<p><input type='file' name='images[]' multiple accept='image/*'></p>
+<input type='hidden' name='images_order' id='images_order' value=''>
+<ul id='images-list'>";
+if ($edit_product && $product_images) {
+  foreach ($product_images as $index => $image) {
+    $thumb = product_image_with_size($image['filename_base'], 150);
+    $thumb_url = "/uploads/provider_products/".h((string)$edit_product['id'])."/".h($thumb);
+    $cover_label = $index === 0 ? "Portada" : "";
+    echo "<li data-id='".h((string)$image['id'])."'>
+<img src='".$thumb_url."' alt='' width='80' height='80'>
+ <span class='cover-label'>".h($cover_label)."</span>
+ <button type='button' class='move-up'>↑</button>
+ <button type='button' class='move-down'>↓</button>
+ <button type='button' class='img-delete' data-image-id='".h((string)$image['id'])."'>X</button>
+</li>";
+  }
+} else {
+  echo "<li>No hay imágenes cargadas.</li>";
+}
+echo "</ul>
+</fieldset>
+<button>".($edit_product ? "Guardar cambios" : "Crear")."</button>";
+if ($edit_product) {
+  echo " <a href='".$listUrl."'>Cancelar edición</a>";
+}
+echo "
+</form>
+<script>
+(function() {
+  var list = document.getElementById('images-list');
+  var orderInput = document.getElementById('images_order');
+  if (!list || !orderInput) return;
+
+  function updateOrder() {
+    var ids = [];
+    var items = list.querySelectorAll('li[data-id]');
+    items.forEach(function(item, index) {
+      ids.push(item.getAttribute('data-id'));
+      var label = item.querySelector('.cover-label');
+      if (label) {
+        label.textContent = index === 0 ? 'Portada' : '';
+      }
+    });
+    orderInput.value = ids.join(',');
+  }
+
+  var deleteInput = document.getElementById('delete_image_id');
+  var actionInput = document.getElementById('product_action');
+  var form = list.closest('form');
+
+  list.addEventListener('click', function(event) {
+    if (event.target.classList.contains('img-delete')) {
+      var imageId = event.target.getAttribute('data-image-id');
+      if (!imageId) return;
+      if (!confirm('¿Eliminar esta imagen?')) return;
+      if (deleteInput) deleteInput.value = imageId;
+      if (actionInput) actionInput.value = 'delete_image';
+      if (form) form.submit();
+      return;
+    }
+    if (event.target.classList.contains('move-up') || event.target.classList.contains('move-down')) {
+      var item = event.target.closest('li');
+      if (!item) return;
+      if (event.target.classList.contains('move-up')) {
+        var prev = item.previousElementSibling;
+        if (prev && prev.hasAttribute('data-id')) {
+          list.insertBefore(item, prev);
+        }
+      } else {
+        var next = item.nextElementSibling;
+        if (next) {
+          list.insertBefore(next, item);
+        }
+      }
+      updateOrder();
+    }
+  });
+
+  updateOrder();
+})();
+</script>
+<hr>";
+}
+
+if ($view === 'new' || $view === 'edit') {
+echo "<fieldset>
 <legend>Variantes (Color)</legend>";
 if (!$variantRows) {
   echo "<p>Sin variantes.</p>";
@@ -657,89 +744,6 @@ if ($role === 'superadmin' || $role === 'provider') {
   </form>";
 }
 echo "</fieldset>
-<fieldset>
-<legend>Imágenes</legend>
-<p><input type='file' name='images[]' multiple accept='image/*'></p>
-<input type='hidden' name='images_order' id='images_order' value=''>
-<ul id='images-list'>";
-if ($edit_product && $product_images) {
-  foreach ($product_images as $index => $image) {
-    $thumb = product_image_with_size($image['filename_base'], 150);
-    $thumb_url = "/uploads/provider_products/".h((string)$edit_product['id'])."/".h($thumb);
-    $cover_label = $index === 0 ? "Portada" : "";
-    echo "<li data-id='".h((string)$image['id'])."'>
-<img src='".$thumb_url."' alt='' width='80' height='80'>
- <span class='cover-label'>".h($cover_label)."</span>
- <button type='button' class='move-up'>↑</button>
- <button type='button' class='move-down'>↓</button>
- <button type='button' class='img-delete' data-image-id='".h((string)$image['id'])."'>X</button>
-</li>";
-  }
-} else {
-  echo "<li>No hay imágenes cargadas.</li>";
-}
-echo "</ul>
-</fieldset>
-<button>".($edit_product ? "Guardar cambios" : "Crear")."</button>";
-if ($edit_product) {
-  echo " <a href='".$listUrl."'>Cancelar edición</a>";
-}
-echo "
-</form>
-<script>
-(function() {
-  var list = document.getElementById('images-list');
-  var orderInput = document.getElementById('images_order');
-  if (!list || !orderInput) return;
-
-  function updateOrder() {
-    var ids = [];
-    var items = list.querySelectorAll('li[data-id]');
-    items.forEach(function(item, index) {
-      ids.push(item.getAttribute('data-id'));
-      var label = item.querySelector('.cover-label');
-      if (label) {
-        label.textContent = index === 0 ? 'Portada' : '';
-      }
-    });
-    orderInput.value = ids.join(',');
-  }
-
-  var deleteInput = document.getElementById('delete_image_id');
-  var actionInput = document.getElementById('product_action');
-  var form = list.closest('form');
-
-  list.addEventListener('click', function(event) {
-    if (event.target.classList.contains('img-delete')) {
-      var imageId = event.target.getAttribute('data-image-id');
-      if (!imageId) return;
-      if (!confirm('¿Eliminar esta imagen?')) return;
-      if (deleteInput) deleteInput.value = imageId;
-      if (actionInput) actionInput.value = 'delete_image';
-      if (form) form.submit();
-      return;
-    }
-    if (event.target.classList.contains('move-up') || event.target.classList.contains('move-down')) {
-      var item = event.target.closest('li');
-      if (!item) return;
-      if (event.target.classList.contains('move-up')) {
-        var prev = item.previousElementSibling;
-        if (prev && prev.hasAttribute('data-id')) {
-          list.insertBefore(item, prev);
-        }
-      } else {
-        var next = item.nextElementSibling;
-        if (next) {
-          list.insertBefore(next, item);
-        }
-      }
-      updateOrder();
-    }
-  });
-
-  updateOrder();
-})();
-</script>
 <hr>";
 }
 
