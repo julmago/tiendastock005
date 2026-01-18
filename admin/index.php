@@ -14,6 +14,7 @@ echo "<ul>
 if (($_SESSION['role'] ?? '') === 'superadmin') {
   echo "<li><a href='/admin/categorias.php'>Categorías</a></li>";
   echo "<li><a href='/admin/formas_entrega.php'>Formas de entrega</a></li>";
+  echo "<li><a href='/admin/colores.php'>Colores</a></li>";
 }
 echo "
 </ul>";
