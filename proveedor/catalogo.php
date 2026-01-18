@@ -84,6 +84,93 @@ foreach ($flatCategories as $cat) {
 
 $variantHandled = false;
 $canManageVariants = in_array($role, ['superadmin', 'provider'], true);
+$variant_image_size = 600;
+
+function variant_image_relative_path(int $variantId, string $filename): string {
+  return "/uploads/provider_variant_images/".$variantId."/".$filename;
+}
+
+function variant_image_disk_path(string $relativePath): string {
+  return __DIR__.'/../'.ltrim($relativePath, '/');
+}
+
+function variant_image_delete_existing(?string $imageCover): void {
+  if (!$imageCover) {
+    return;
+  }
+  if (strpos($imageCover, '/uploads/provider_variant_images/') !== 0) {
+    return;
+  }
+  $diskPath = variant_image_disk_path($imageCover);
+  if (is_file($diskPath) && !unlink($diskPath)) {
+    error_log("No se pudo borrar la imagen de variante {$diskPath}");
+  }
+}
+
+function variant_image_process_upload(array $file, int $variantId, int $maxImageSize, int $targetSize, array &$imageErrors): ?string {
+  if (($file['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
+    return null;
+  }
+  if (($file['error'] ?? UPLOAD_ERR_OK) !== UPLOAD_ERR_OK) {
+    $imageErrors[] = 'Error al subir la imagen de variante.';
+    return null;
+  }
+  $size = (int)($file['size'] ?? 0);
+  if ($size <= 0 || $size > $maxImageSize) {
+    $imageErrors[] = 'La imagen de variante supera el tamaño permitido.';
+    return null;
+  }
+  $tmpPath = $file['tmp_name'] ?? '';
+  $info = $tmpPath ? getimagesize($tmpPath) : false;
+  if ($info === false) {
+    $imageErrors[] = 'El archivo de variante no es una imagen válida.';
+    return null;
+  }
+  $imageType = $info[2];
+  if (!in_array($imageType, [IMAGETYPE_JPEG, IMAGETYPE_PNG], true)) {
+    $imageErrors[] = 'Formato no soportado para la imagen de variante.';
+    return null;
+  }
+  if (!function_exists('imagecreatefromjpeg')) {
+    $imageErrors[] = 'GD no está disponible para procesar imágenes.';
+    return null;
+  }
+  $ext = $imageType === IMAGETYPE_PNG ? 'png' : 'jpg';
+  $baseName = bin2hex(random_bytes(16)).'.'.$ext;
+  $uploadDir = __DIR__.'/../uploads/provider_variant_images/'.$variantId;
+  if (!is_dir($uploadDir)) {
+    mkdir($uploadDir, 0775, true);
+  }
+  if ($imageType === IMAGETYPE_PNG) {
+    $source = imagecreatefrompng($tmpPath);
+  } else {
+    $source = imagecreatefromjpeg($tmpPath);
+  }
+  if (!$source) {
+    $imageErrors[] = 'No se pudo procesar la imagen de variante.';
+    return null;
+  }
+  $width = imagesx($source);
+  $height = imagesy($source);
+  $side = min($width, $height);
+  $srcX = (int)(($width - $side) / 2);
+  $srcY = (int)(($height - $side) / 2);
+  $square = imagecreatetruecolor($side, $side);
+  if ($imageType === IMAGETYPE_PNG) {
+    prepare_png_canvas($square, $side, $side);
+  }
+  imagecopyresampled($square, $source, 0, 0, $srcX, $srcY, $side, $side, $side, $side);
+  imagedestroy($source);
+  $dest = $uploadDir.'/'.$baseName;
+  if (!save_resized_square($square, $targetSize, $dest, $imageType)) {
+    $imageErrors[] = 'No se pudo guardar la imagen de variante.';
+    imagedestroy($square);
+    return null;
+  }
+  imagedestroy($square);
+  return variant_image_relative_path($variantId, $baseName);
+}
+
 if ($canManageVariants && $_SERVER['REQUEST_METHOD'] === 'POST') {
   $variantAction = $_POST['action'] ?? '';
   $allowedActions = $role === 'superadmin'
@@ -114,10 +201,12 @@ if ($canManageVariants && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $colorId = (int)($_POST['color_id'] ?? 0);
         $stockQty = $role === 'superadmin' ? (int)($_POST['stock_qty'] ?? 0) : 0;
         $skuVariant = trim((string)($_POST['sku_variant'] ?? ''));
-        $imageCover = trim((string)($_POST['image_cover'] ?? ''));
-        $imageValue = $imageCover === '' ? null : $imageCover;
+        $imageCoverRaw = trim((string)($_POST['image_cover'] ?? ''));
+        $imageValue = $role === 'superadmin' ? ($imageCoverRaw === '' ? null : $imageCoverRaw) : null;
         if ($colorId <= 0) {
           $err = "Color inválido.";
+        } elseif ($skuVariant === '') {
+          $err = "SKU de variante obligatorio.";
         } else {
           if ($role === 'superadmin') {
             $colorSt = $pdo->prepare("SELECT id FROM colors WHERE id=? LIMIT 1");
@@ -147,17 +236,58 @@ if ($canManageVariants && $_SERVER['REQUEST_METHOD'] === 'POST') {
             INSERT INTO product_variants(owner_type, owner_id, product_id, color_id, sku_variant, stock_qty, image_cover, position)
             VALUES('provider', ?, ?, ?, ?, ?, ?, ?)
           ");
-          $insertSt->execute([$providerId, $product_id, $colorId, $skuVariant ?: null, $stockQty, $imageValue, $nextPos]);
+          $insertSt->execute([$providerId, $product_id, $colorId, $skuVariant, $stockQty, $imageValue, $nextPos]);
+          $variantId = (int)$pdo->lastInsertId();
+          $uploadedPath = null;
+          if (!empty($_FILES['variant_image'])) {
+            $uploadedPath = variant_image_process_upload($_FILES['variant_image'], $variantId, $max_image_size_bytes, $variant_image_size, $image_errors);
+          }
+          if ($uploadedPath !== null) {
+            $pdo->prepare("UPDATE product_variants SET image_cover=? WHERE id=? AND owner_type='provider' AND owner_id=? AND product_id=?")
+                ->execute([$uploadedPath, $variantId, $providerId, $product_id]);
+          }
           $msg = "Variante agregada.";
         }
       } elseif ($variantAction === 'update_variant') {
         $variantId = (int)($_POST['variant_id'] ?? 0);
         $skuVariant = trim((string)($_POST['sku_variant'] ?? ''));
-        $imageCover = trim((string)($_POST['image_cover'] ?? ''));
-        $imageValue = $imageCover === '' ? null : $imageCover;
+        $removeImage = ($_POST['remove_variant_image'] ?? '') === '1';
+        $imageCoverRaw = trim((string)($_POST['image_cover'] ?? ''));
         if ($variantId <= 0) {
           $err = "Variante inválida.";
+        } elseif ($skuVariant === '') {
+          $err = "SKU de variante obligatorio.";
         } else {
+          $currentSt = $pdo->prepare("SELECT image_cover FROM product_variants WHERE id=? AND owner_type='provider' AND owner_id=? AND product_id=?");
+          $currentSt->execute([$variantId, $providerId, $product_id]);
+          $currentImage = $currentSt->fetchColumn();
+          if ($currentImage === false) {
+            $err = "Variante inválida.";
+          }
+        }
+
+        if (empty($err)) {
+          $imageValue = $currentImage ?: null;
+          if ($role === 'superadmin') {
+            $imageValue = $imageCoverRaw === '' ? null : $imageCoverRaw;
+          } else {
+            if ($removeImage && $imageValue) {
+              variant_image_delete_existing($imageValue);
+              $imageValue = null;
+            }
+            if (!empty($_FILES['variant_image']) && ($_FILES['variant_image']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_NO_FILE) {
+              $uploadedPath = variant_image_process_upload($_FILES['variant_image'], $variantId, $max_image_size_bytes, $variant_image_size, $image_errors);
+              if ($uploadedPath !== null) {
+                if ($imageValue) {
+                  variant_image_delete_existing($imageValue);
+                }
+                $imageValue = $uploadedPath;
+              }
+            }
+          }
+        }
+
+        if (empty($err)) {
           if ($role === 'superadmin') {
             $stockQty = (int)($_POST['stock_qty'] ?? 0);
             $updateSt = $pdo->prepare("
@@ -165,14 +295,14 @@ if ($canManageVariants && $_SERVER['REQUEST_METHOD'] === 'POST') {
               SET sku_variant=?, stock_qty=?, image_cover=?
               WHERE id=? AND owner_type='provider' AND owner_id=? AND product_id=?
             ");
-            $updateSt->execute([$skuVariant ?: null, $stockQty, $imageValue, $variantId, $providerId, $product_id]);
+            $updateSt->execute([$skuVariant, $stockQty, $imageValue, $variantId, $providerId, $product_id]);
           } else {
             $updateSt = $pdo->prepare("
               UPDATE product_variants
               SET sku_variant=?, image_cover=?
               WHERE id=? AND owner_type='provider' AND owner_id=? AND product_id=?
             ");
-            $updateSt->execute([$skuVariant ?: null, $imageValue, $variantId, $providerId, $product_id]);
+            $updateSt->execute([$skuVariant, $imageValue, $variantId, $providerId, $product_id]);
           }
           if ($updateSt->rowCount() === 0) {
             $err = "Variante inválida.";
@@ -408,9 +538,9 @@ if (!$variantRows) {
   echo "<p>Sin variantes.</p>";
 } else {
   echo "<table border='1' cellpadding='6' cellspacing='0'>
-  <tr><th>Color</th><th>SKU</th><th>Stock</th>";
+  <tr><th>Color</th><th>SKU</th>";
   if ($role === 'superadmin') {
-    echo "<th>Imagen</th><th>Orden</th><th>Acciones</th>";
+    echo "<th>Stock</th><th>Imagen</th><th>Orden</th><th>Acciones</th>";
   } else {
     echo "<th>Imagen</th><th>Acciones</th>";
   }
@@ -422,7 +552,7 @@ if (!$variantRows) {
       <td>".h((string)$variant['color_name'])."</td>";
     if ($role === 'superadmin') {
       $formId = "variant-update-".(int)$variant['id'];
-      echo "<td><input name='sku_variant' value='".h((string)($variant['sku_variant'] ?? ''))."' style='width:140px' form='".h($formId)."'></td>
+      echo "<td><input name='sku_variant' value='".h((string)($variant['sku_variant'] ?? ''))."' style='width:140px' form='".h($formId)."' required></td>
       <td><input name='stock_qty' value='".h((string)$variant['stock_qty'])."' style='width:80px' form='".h($formId)."'></td>
       <td><input name='image_cover' value='".h((string)($variant['image_cover'] ?? ''))."' style='width:180px' form='".h($formId)."'></td>
       <td>".h((string)$variant['position'])."</td>
@@ -464,11 +594,16 @@ if (!$variantRows) {
       </td>";
     } else {
       $formId = "variant-update-".(int)$variant['id'];
-      echo "<td><input name='sku_variant' value='".h((string)($variant['sku_variant'] ?? ''))."' style='width:140px' form='".h($formId)."'></td>
-      <td><input name='stock_qty' value='".h((string)$variant['stock_qty'])."' style='width:80px' readonly form='".h($formId)."'></td>
-      <td><input name='image_cover' value='".h((string)($variant['image_cover'] ?? ''))."' style='width:180px' form='".h($formId)."'></td>
+      $imageCover = (string)($variant['image_cover'] ?? '');
+      $imagePreview = '';
+      if ($imageCover !== '') {
+        $imagePreview = "<img src='".h($imageCover)."' alt='' width='50' height='50'> ";
+      }
+      $removeCheckbox = $imageCover !== '' ? "<label style='margin-left:8px;'><input type='checkbox' name='remove_variant_image' value='1' form='".h($formId)."'> Eliminar</label>" : '';
+      echo "<td><input name='sku_variant' value='".h((string)($variant['sku_variant'] ?? ''))."' style='width:140px' form='".h($formId)."' required></td>
+      <td>".$imagePreview."<input type='file' name='variant_image' accept='image/*' form='".h($formId)."'>".$removeCheckbox."</td>
       <td>
-        <form method='post' id='".h($formId)."' style='margin:0; display:inline;'>
+        <form method='post' enctype='multipart/form-data' id='".h($formId)."' style='margin:0; display:inline;'>
           <input type='hidden' name='csrf' value='".h(csrf_token())."'>
           <input type='hidden' name='action' value='update_variant'>
           <input type='hidden' name='product_id' value='".h((string)$edit_id)."'>
@@ -492,7 +627,7 @@ if (!$variantRows) {
 }
 if ($role === 'superadmin' || $role === 'provider') {
   echo "<h4>Agregar variante</h4>
-  <form method='post'>
+  <form method='post' enctype='multipart/form-data'>
     <input type='hidden' name='csrf' value='".h(csrf_token())."'>
     <input type='hidden' name='action' value='add_variant'>
     <input type='hidden' name='product_id' value='".h((string)$edit_id)."'>
@@ -507,10 +642,17 @@ if ($role === 'superadmin' || $role === 'provider') {
     }
     echo "<option value='".h((string)$color['id'])."'>".h($colorLabel)."</option>";
   }
-  echo "</select></p>
-    <p>Stock: <input name='stock_qty' style='width:80px' value='".($role === 'superadmin' ? '' : '0')."' ".($role === 'superadmin' ? '' : "readonly")."></p>
-    <p>SKU: <input name='sku_variant' style='width:180px'></p>
-    <p>Imagen: <input name='image_cover' style='width:220px'></p>
+  echo "</select></p>";
+  if ($role === 'superadmin') {
+    echo "<p>Stock: <input name='stock_qty' style='width:80px'></p>";
+  }
+  echo "<p>SKU: <input name='sku_variant' style='width:180px' required></p>";
+  if ($role === 'superadmin') {
+    echo "<p>Imagen: <input name='image_cover' style='width:220px'></p>";
+  } else {
+    echo "<p>Imagen: <input type='file' name='variant_image' accept='image/*'></p>";
+  }
+  echo "
     <button>Agregar</button>
   </form>";
 }
