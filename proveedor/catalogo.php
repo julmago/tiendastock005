@@ -3,12 +3,54 @@ require __DIR__.'/../config.php';
 require __DIR__.'/../_inc/layout.php';
 require __DIR__.'/../lib/product_images.php';
 csrf_check();
-require_role('provider','/proveedor/login.php');
+$role = $_SESSION['role'] ?? '';
+if ($role === 'superadmin') {
+  require_role('superadmin', '/admin/login.php');
+} else {
+  require_role('provider','/proveedor/login.php');
+}
 
-$st = $pdo->prepare("SELECT id, status FROM providers WHERE user_id=? LIMIT 1");
-$st->execute([(int)$_SESSION['uid']]);
-$p = $st->fetch();
-if (!$p) exit('Proveedor inválido');
+$p = null;
+if ($role === 'superadmin') {
+  $providerId = (int)($_GET['provider_id'] ?? $_POST['provider_id'] ?? 0);
+  if ($providerId > 0) {
+    $st = $pdo->prepare("SELECT id, status, display_name FROM providers WHERE id=? LIMIT 1");
+    $st->execute([$providerId]);
+    $p = $st->fetch();
+    if (!$p) {
+      $providerId = 0;
+      $err = "Proveedor inválido.";
+    }
+  }
+} else {
+  $st = $pdo->prepare("SELECT id, status FROM providers WHERE user_id=? LIMIT 1");
+  $st->execute([(int)$_SESSION['uid']]);
+  $p = $st->fetch();
+  if (!$p) exit('Proveedor inválido');
+  $providerId = (int)$p['id'];
+}
+
+$providerId = (int)($p['id'] ?? 0);
+$providerStatus = (string)($p['status'] ?? '');
+
+if ($role === 'superadmin' && $providerId === 0) {
+  $providers = $pdo->query("SELECT id, display_name FROM providers ORDER BY id DESC")->fetchAll();
+  page_header('Proveedor - Catálogo base');
+  if (!empty($err)) echo "<p style='color:#b00'>".h($err)."</p>";
+  echo "<form method='get'>
+  <p>Proveedor:
+    <select name='provider_id'>
+      <option value='0'>-- elegir --</option>";
+  foreach ($providers as $provider) {
+    echo "<option value='".h((string)$provider['id'])."'>".h((string)$provider['display_name'])."</option>";
+  }
+  echo "</select>
+    <button>Ver</button>
+  </p>
+  </form>";
+  page_footer();
+  exit;
+}
 
 $edit_id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
 $edit_product = null;
@@ -40,14 +82,144 @@ foreach ($flatCategories as $cat) {
   $categoryIdSet[(int)$cat['id']] = true;
 }
 
-if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '') === 'delete_image') {
+$variantHandled = false;
+if ($role === 'superadmin' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+  $variantAction = $_POST['action'] ?? '';
+  if (in_array($variantAction, ['add_variant', 'update_variant', 'delete_variant', 'move_variant'], true)) {
+    $variantHandled = true;
+    $product_id = (int)($_POST['product_id'] ?? 0);
+    $edit_id = $product_id;
+    if ($product_id <= 0) {
+      $err = "Producto inválido.";
+    } else {
+      $st = $pdo->prepare("SELECT id FROM provider_products WHERE id=? AND provider_id=? LIMIT 1");
+      $st->execute([$product_id, $providerId]);
+      if (!$st->fetch()) {
+        $err = "Producto inválido.";
+      }
+    }
+
+    if (empty($err)) {
+      if ($variantAction === 'add_variant') {
+        $colorId = (int)($_POST['color_id'] ?? 0);
+        $stockQty = (int)($_POST['stock_qty'] ?? 0);
+        $skuVariant = trim((string)($_POST['sku_variant'] ?? ''));
+        $imageCover = trim((string)($_POST['image_cover'] ?? ''));
+        $imageValue = $imageCover === '' ? null : $imageCover;
+        if ($colorId <= 0) {
+          $err = "Color inválido.";
+        } else {
+          $colorSt = $pdo->prepare("SELECT id FROM colors WHERE id=? LIMIT 1");
+          $colorSt->execute([$colorId]);
+          if (!$colorSt->fetch()) {
+            $err = "Color inválido.";
+          }
+        }
+
+        if (empty($err)) {
+          $dupSt = $pdo->prepare("SELECT id FROM product_variants WHERE owner_type='provider' AND owner_id=? AND product_id=? AND color_id=? LIMIT 1");
+          $dupSt->execute([$providerId, $product_id, $colorId]);
+          if ($dupSt->fetch()) {
+            $err = "El color ya está agregado.";
+          }
+        }
+
+        if (empty($err)) {
+          $posSt = $pdo->prepare("SELECT COALESCE(MAX(position),0) FROM product_variants WHERE owner_type='provider' AND owner_id=? AND product_id=?");
+          $posSt->execute([$providerId, $product_id]);
+          $nextPos = (int)$posSt->fetchColumn() + 1;
+          $insertSt = $pdo->prepare("
+            INSERT INTO product_variants(owner_type, owner_id, product_id, color_id, sku_variant, stock_qty, image_cover, position)
+            VALUES('provider', ?, ?, ?, ?, ?, ?, ?)
+          ");
+          $insertSt->execute([$providerId, $product_id, $colorId, $skuVariant ?: null, $stockQty, $imageValue, $nextPos]);
+          $msg = "Variante agregada.";
+        }
+      } elseif ($variantAction === 'update_variant') {
+        $variantId = (int)($_POST['variant_id'] ?? 0);
+        $stockQty = (int)($_POST['stock_qty'] ?? 0);
+        $skuVariant = trim((string)($_POST['sku_variant'] ?? ''));
+        $imageCover = trim((string)($_POST['image_cover'] ?? ''));
+        $imageValue = $imageCover === '' ? null : $imageCover;
+        if ($variantId <= 0) {
+          $err = "Variante inválida.";
+        } else {
+          $updateSt = $pdo->prepare("
+            UPDATE product_variants
+            SET sku_variant=?, stock_qty=?, image_cover=?
+            WHERE id=? AND owner_type='provider' AND owner_id=? AND product_id=?
+          ");
+          $updateSt->execute([$skuVariant ?: null, $stockQty, $imageValue, $variantId, $providerId, $product_id]);
+          if ($updateSt->rowCount() === 0) {
+            $err = "Variante inválida.";
+          } else {
+            $msg = "Variante actualizada.";
+          }
+        }
+      } elseif ($variantAction === 'delete_variant') {
+        $variantId = (int)($_POST['variant_id'] ?? 0);
+        if ($variantId <= 0) {
+          $err = "Variante inválida.";
+        } else {
+          $delSt = $pdo->prepare("DELETE FROM product_variants WHERE id=? AND owner_type='provider' AND owner_id=? AND product_id=?");
+          $delSt->execute([$variantId, $providerId, $product_id]);
+          if ($delSt->rowCount() === 0) {
+            $err = "Variante inválida.";
+          } else {
+            $msg = "Variante eliminada.";
+          }
+        }
+      } elseif ($variantAction === 'move_variant') {
+        $variantId = (int)($_POST['variant_id'] ?? 0);
+        $direction = $_POST['direction'] ?? '';
+        if ($variantId <= 0 || !in_array($direction, ['up', 'down'], true)) {
+          $err = "Movimiento inválido.";
+        } else {
+          $orderSt = $pdo->prepare("
+            SELECT id, position
+            FROM product_variants
+            WHERE owner_type='provider' AND owner_id=? AND product_id=?
+            ORDER BY position ASC, id ASC
+          ");
+          $orderSt->execute([$providerId, $product_id]);
+          $variants = $orderSt->fetchAll();
+          $index = null;
+          foreach ($variants as $i => $variant) {
+            if ((int)$variant['id'] === $variantId) {
+              $index = $i;
+              break;
+            }
+          }
+          if ($index === null) {
+            $err = "Variante inválida.";
+          } else {
+            $swapIndex = $direction === 'up' ? $index - 1 : $index + 1;
+            if (!isset($variants[$swapIndex])) {
+              $err = "No se puede mover.";
+            } else {
+              $current = $variants[$index];
+              $swap = $variants[$swapIndex];
+              $pdo->prepare("UPDATE product_variants SET position=? WHERE id=?")
+                  ->execute([(int)$swap['position'], (int)$current['id']]);
+              $pdo->prepare("UPDATE product_variants SET position=? WHERE id=?")
+                  ->execute([(int)$current['position'], (int)$swap['id']]);
+              $msg = "Orden actualizado.";
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+if (!$variantHandled && $_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '') === 'delete_image') {
   $product_id = isset($_POST['product_id']) ? (int)$_POST['product_id'] : 0;
   $image_id = isset($_POST['delete_image_id']) ? (int)$_POST['delete_image_id'] : 0;
   if ($product_id <= 0 || $image_id <= 0) {
     $err = "Imagen inválida.";
   } else {
     $st = $pdo->prepare("SELECT id FROM provider_products WHERE id=? AND provider_id=? LIMIT 1");
-    $st->execute([$product_id, (int)$p['id']]);
+    $st->execute([$product_id, $providerId]);
     if (!$st->fetch()) {
       $err = "Producto inválido.";
     } else {
@@ -60,8 +232,8 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '') === 'delete_
       $edit_id = $product_id;
     }
   }
-} elseif ($_SERVER['REQUEST_METHOD']==='POST') {
-  if (($p['status'] ?? '') !== 'active') $err="Cuenta pendiente de aprobación.";
+} elseif (!$variantHandled && $_SERVER['REQUEST_METHOD']==='POST') {
+  if ($role !== 'superadmin' && $providerStatus !== 'active') $err="Cuenta pendiente de aprobación.";
   else {
     $title = trim((string)($_POST['title'] ?? ''));
     $price = (float)($_POST['base_price'] ?? 0);
@@ -77,10 +249,10 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '') === 'delete_
     else {
       if ($product_id > 0) {
         $st = $pdo->prepare("SELECT id FROM provider_products WHERE id=? AND provider_id=? LIMIT 1");
-        $st->execute([$product_id,(int)$p['id']]);
+        $st->execute([$product_id,$providerId]);
         if ($st->fetch()) {
           $pdo->prepare("UPDATE provider_products SET title=?, sku=?, universal_code=?, description=?, base_price=?, category_id=? WHERE id=? AND provider_id=?")
-              ->execute([$title,$sku?:null,$universalCode?:null,$desc?:null,$price,$categoryValue,$product_id,(int)$p['id']]);
+              ->execute([$title,$sku?:null,$universalCode?:null,$desc?:null,$price,$categoryValue,$product_id,$providerId]);
           $msg="Actualizado.";
           $edit_id = $product_id;
         } else {
@@ -88,7 +260,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '') === 'delete_
         }
       } else {
         $pdo->prepare("INSERT INTO provider_products(provider_id,title,sku,universal_code,description,base_price,category_id,status) VALUES(?,?,?,?,?,?,?,'active')")
-            ->execute([(int)$p['id'],$title,$sku?:null,$universalCode?:null,$desc?:null,$price,$categoryValue]);
+            ->execute([$providerId,$title,$sku?:null,$universalCode?:null,$desc?:null,$price,$categoryValue]);
         $msg="Creado.";
         $product_id = (int)$pdo->lastInsertId();
         $edit_id = $product_id;
@@ -108,7 +280,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '') === 'delete_
 
 if ($edit_id > 0) {
   $st = $pdo->prepare("SELECT id,title,sku,universal_code,description,base_price,category_id FROM provider_products WHERE id=? AND provider_id=? LIMIT 1");
-  $st->execute([$edit_id,(int)$p['id']]);
+  $st->execute([$edit_id,$providerId]);
   $edit_product = $st->fetch();
   if (!$edit_product) {
     $err = $err ?? "Producto inválido.";
@@ -122,14 +294,19 @@ if ($edit_id > 0) {
 $variantRows = [];
 if ($edit_id > 0) {
   $variantSt = $pdo->prepare("
-    SELECT pv.color_id, pv.sku_variant, pv.stock_qty, c.name AS color_name
+    SELECT pv.id, pv.color_id, pv.sku_variant, pv.stock_qty, pv.image_cover, pv.position, c.name AS color_name
     FROM product_variants pv
     JOIN colors c ON c.id = pv.color_id
     WHERE pv.owner_type='provider' AND pv.owner_id=? AND pv.product_id=?
     ORDER BY pv.position ASC, pv.id ASC
   ");
-  $variantSt->execute([(int)$p['id'], $edit_id]);
+  $variantSt->execute([$providerId, $edit_id]);
   $variantRows = $variantSt->fetchAll();
+}
+if ($role === 'superadmin') {
+  $colors = $pdo->query("SELECT id, name, active FROM colors ORDER BY name ASC, id ASC")->fetchAll();
+} else {
+  $colors = [];
 }
 
 $rows = $pdo->prepare("SELECT p.id, p.title, p.sku, p.universal_code, p.base_price, i.filename_base AS cover_image,
@@ -155,7 +332,7 @@ $rows = $pdo->prepare("SELECT p.id, p.title, p.sku, p.universal_code, p.base_pri
   WHERE p.provider_id=?
   GROUP BY p.id, p.title, p.sku, p.universal_code, p.base_price, i.filename_base, ws.qty_available, ws.qty_reserved, pv.variant_count, pv.variant_stock
   ORDER BY p.id DESC");
-$rows->execute([(int)$p['id']]);
+$rows->execute([$providerId]);
 $list = $rows->fetchAll();
 
 $view = 'list';
@@ -172,7 +349,11 @@ if (!empty($err)) echo "<p style='color:#b00'>".h($err)."</p>";
 if (!empty($image_errors)) {
   echo "<p style='color:#b00'>".h(implode(' ', $image_errors))."</p>";
 }
-echo "<p><a href='/proveedor/catalogo.php?view=new'>Nuevo</a> | <a href='/proveedor/catalogo.php'>Listado</a></p>";
+$providerQuery = $role === 'superadmin' ? '&provider_id='.h((string)$providerId) : '';
+$providerQueryPrefix = $role === 'superadmin' ? '?provider_id='.h((string)$providerId) : '';
+$newUrl = "/proveedor/catalogo.php?view=new".$providerQuery;
+$listUrl = "/proveedor/catalogo.php".$providerQueryPrefix;
+echo "<p><a href='".$newUrl."'>Nuevo</a> | <a href='".$listUrl."'>Listado</a></p>";
 echo "<hr>";
 
 if ($view === 'new' || $view === 'edit') {
@@ -180,6 +361,7 @@ echo "<form method='post' enctype='multipart/form-data'>
 <input type='hidden' name='csrf' value='".h(csrf_token())."'>
 <input type='hidden' name='action' id='product_action' value='save_product'>
 <input type='hidden' name='product_id' value='".h((string)($edit_product['id'] ?? ''))."'>
+<input type='hidden' name='provider_id' value='".h((string)$providerId)."'>
 <input type='hidden' name='delete_image_id' id='delete_image_id' value=''>
 <p>Título: <input name='title' style='width:520px' value='".h($edit_product['title'] ?? '')."'></p>
 <p>SKU: <input name='sku' style='width:220px' value='".h($edit_product['sku'] ?? '')."'></p>
@@ -202,16 +384,89 @@ if (!$variantRows) {
   echo "<p>Sin variantes.</p>";
 } else {
   echo "<table border='1' cellpadding='6' cellspacing='0'>
-  <tr><th>Color</th><th>SKU</th><th>Stock</th></tr>";
+  <tr><th>Color</th><th>SKU</th><th>Stock</th>";
+  if ($role === 'superadmin') {
+    echo "<th>Imagen</th><th>Orden</th><th>Acciones</th>";
+  }
+  echo "</tr>";
   foreach ($variantRows as $variant) {
     $skuVariant = $variant['sku_variant'] !== null && $variant['sku_variant'] !== '' ? $variant['sku_variant'] : '—';
+    $imageCover = $variant['image_cover'] !== null && $variant['image_cover'] !== '' ? $variant['image_cover'] : '—';
     echo "<tr>
-      <td>".h((string)$variant['color_name'])."</td>
-      <td>".h((string)$skuVariant)."</td>
-      <td>".h((string)$variant['stock_qty'])."</td>
-    </tr>";
+      <td>".h((string)$variant['color_name'])."</td>";
+    if ($role === 'superadmin') {
+      $formId = "variant-update-".(int)$variant['id'];
+      echo "<td><input name='sku_variant' value='".h((string)($variant['sku_variant'] ?? ''))."' style='width:140px' form='".h($formId)."'></td>
+      <td><input name='stock_qty' value='".h((string)$variant['stock_qty'])."' style='width:80px' form='".h($formId)."'></td>
+      <td><input name='image_cover' value='".h((string)($variant['image_cover'] ?? ''))."' style='width:180px' form='".h($formId)."'></td>
+      <td>".h((string)$variant['position'])."</td>
+      <td>
+        <form method='post' id='".h($formId)."' style='margin:0; display:inline;'>
+          <input type='hidden' name='csrf' value='".h(csrf_token())."'>
+          <input type='hidden' name='action' value='update_variant'>
+          <input type='hidden' name='product_id' value='".h((string)$edit_id)."'>
+          <input type='hidden' name='provider_id' value='".h((string)$providerId)."'>
+          <input type='hidden' name='variant_id' value='".h((string)$variant['id'])."'>
+          <button>Guardar</button>
+        </form>
+        <form method='post' style='margin:0; display:inline;'>
+          <input type='hidden' name='csrf' value='".h(csrf_token())."'>
+          <input type='hidden' name='action' value='move_variant'>
+          <input type='hidden' name='product_id' value='".h((string)$edit_id)."'>
+          <input type='hidden' name='provider_id' value='".h((string)$providerId)."'>
+          <input type='hidden' name='variant_id' value='".h((string)$variant['id'])."'>
+          <input type='hidden' name='direction' value='up'>
+          <button>↑</button>
+        </form>
+        <form method='post' style='margin:0; display:inline;'>
+          <input type='hidden' name='csrf' value='".h(csrf_token())."'>
+          <input type='hidden' name='action' value='move_variant'>
+          <input type='hidden' name='product_id' value='".h((string)$edit_id)."'>
+          <input type='hidden' name='provider_id' value='".h((string)$providerId)."'>
+          <input type='hidden' name='variant_id' value='".h((string)$variant['id'])."'>
+          <input type='hidden' name='direction' value='down'>
+          <button>↓</button>
+        </form>
+        <form method='post' style='margin:0; display:inline;' onsubmit='return confirm(\"¿Eliminar variante?\")'>
+          <input type='hidden' name='csrf' value='".h(csrf_token())."'>
+          <input type='hidden' name='action' value='delete_variant'>
+          <input type='hidden' name='product_id' value='".h((string)$edit_id)."'>
+          <input type='hidden' name='provider_id' value='".h((string)$providerId)."'>
+          <input type='hidden' name='variant_id' value='".h((string)$variant['id'])."'>
+          <button>Eliminar</button>
+        </form>
+      </td>";
+    } else {
+      echo "<td>".h((string)$skuVariant)."</td>
+      <td>".h((string)$variant['stock_qty'])."</td>";
+    }
+    echo "</tr>";
   }
   echo "</table>";
+}
+if ($role === 'superadmin') {
+  echo "<h4>Agregar variante</h4>
+  <form method='post'>
+    <input type='hidden' name='csrf' value='".h(csrf_token())."'>
+    <input type='hidden' name='action' value='add_variant'>
+    <input type='hidden' name='product_id' value='".h((string)$edit_id)."'>
+    <input type='hidden' name='provider_id' value='".h((string)$providerId)."'>
+    <p>Color:
+      <select name='color_id'>
+        <option value='0'>-- elegir --</option>";
+  foreach ($colors as $color) {
+    $colorLabel = $color['name'];
+    if ((int)$color['active'] !== 1) {
+      $colorLabel .= " (inactivo)";
+    }
+    echo "<option value='".h((string)$color['id'])."'>".h($colorLabel)."</option>";
+  }
+  echo "</select></p>
+    <p>Stock: <input name='stock_qty' style='width:80px'></p>
+    <p>SKU: <input name='sku_variant' style='width:180px'></p>
+    <p>Imagen: <input name='image_cover' style='width:220px'></p>
+    <button>Agregar</button>
+  </form>";
 }
 echo "</fieldset>
 <fieldset>
@@ -239,7 +494,7 @@ echo "</ul>
 </fieldset>
 <button>".($edit_product ? "Guardar cambios" : "Crear")."</button>";
 if ($edit_product) {
-  echo " <a href='/proveedor/catalogo.php'>Cancelar edición</a>";
+  echo " <a href='".$listUrl."'>Cancelar edición</a>";
 }
 echo "
 </form>
@@ -303,7 +558,7 @@ echo "
 if ($view === 'list') {
 echo "<table border='1' cellpadding='6' cellspacing='0'><tr><th>Imagen</th><th>Título</th><th>SKU</th><th>Código universal</th><th>Base</th><th>Disp</th><th>Res</th><th>Ventas</th><th>Acciones</th></tr>";
 foreach($list as $r){
-  $url = "/proveedor/catalogo.php?id=".h((string)$r['id']);
+  $url = "/proveedor/catalogo.php?id=".h((string)$r['id']).$providerQuery;
   $ventasUrl = "/proveedor/stock_ventas.php?id=".h((string)$r['id']);
   if (!empty($r['cover_image'])) {
     $thumb = product_image_with_size($r['cover_image'], 150);
