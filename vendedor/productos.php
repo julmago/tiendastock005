@@ -23,6 +23,31 @@ $currentStore = null;
 foreach($myStores as $ms){ if ((int)$ms['id'] === $storeId) $currentStore = $ms; }
 if (!$currentStore) { page_header('Productos'); echo "<p>Primero creá una tienda.</p>"; page_footer(); exit; }
 
+$categoryRows = $pdo->query("SELECT id, parent_id, name FROM categories ORDER BY name ASC, id ASC")->fetchAll();
+$categoriesByParent = [];
+foreach ($categoryRows as $cat) {
+  $parentId = $cat['parent_id'] ? (int)$cat['parent_id'] : 0;
+  $categoriesByParent[$parentId][] = $cat;
+}
+
+function flatten_categories(array $byParent, int $parentId, int $depth, array &$flat): void {
+  if (empty($byParent[$parentId])) {
+    return;
+  }
+  foreach ($byParent[$parentId] as $cat) {
+    $cat['depth'] = $depth;
+    $flat[] = $cat;
+    flatten_categories($byParent, (int)$cat['id'], $depth + 1, $flat);
+  }
+}
+
+$flatCategories = [];
+flatten_categories($categoriesByParent, 0, 0, $flatCategories);
+$categoryIdSet = [];
+foreach ($flatCategories as $cat) {
+  $categoryIdSet[(int)$cat['id']] = true;
+}
+
 $action = $_GET['action'] ?? 'list';
 if (!in_array($action, ['list', 'new'], true)) $action = 'list';
 $listUrl = "productos.php?action=list&store_id=".h((string)$storeId);
@@ -32,12 +57,15 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '') === 'create'
   $title = trim((string)($_POST['title'] ?? ''));
   $sku = trim((string)($_POST['sku'] ?? ''));
   $universalCode = trim((string)($_POST['universal_code'] ?? ''));
+  $categoryId = (int)($_POST['category_id'] ?? 0);
+  $categoryValue = $categoryId > 0 ? $categoryId : null;
   if (!$title) $err="Falta título.";
   elseif ($universalCode !== '' && !preg_match('/^\d{8,14}$/', $universalCode)) $err = "El código universal debe tener entre 8 y 14 números.";
+  elseif ($categoryValue !== null && empty($categoryIdSet[$categoryId])) $err = "Categoría inválida.";
   else {
-    $pdo->prepare("INSERT INTO store_products(store_id,title,sku,universal_code,description,status,own_stock_qty,own_stock_price,manual_price)
-                   VALUES(?,?,?,?,?, 'active',0,NULL,NULL)")
-        ->execute([$storeId,$title,$sku?:null,$universalCode?:null,($_POST['description']??'')?:null]);
+    $pdo->prepare("INSERT INTO store_products(store_id,title,sku,universal_code,description,category_id,status,own_stock_qty,own_stock_price,manual_price)
+                   VALUES(?,?,?,?,?,?,'active',0,NULL,NULL)")
+        ->execute([$storeId,$title,$sku?:null,$universalCode?:null,($_POST['description']??'')?:null,$categoryValue]);
     $productId = (int)$pdo->lastInsertId();
     $upload_dir = __DIR__.'/../uploads/store_products/'.$productId;
     if (!is_dir($upload_dir)) {
@@ -206,14 +234,14 @@ if ($action === 'new') {
   if ($providerQuery !== '') {
     $like = "%{$providerQuery}%";
     $searchSt = $pdo->prepare("
-      SELECT pp.id, pp.title, pp.sku, pp.universal_code, pp.base_price, pp.description, p.display_name AS provider_name,
+      SELECT pp.id, pp.title, pp.sku, pp.universal_code, pp.base_price, pp.description, pp.category_id, p.display_name AS provider_name,
              COALESCE(SUM(GREATEST(ws.qty_available - ws.qty_reserved,0)),0) AS stock
       FROM provider_products pp
       JOIN providers p ON p.id=pp.provider_id
       LEFT JOIN warehouse_stock ws ON ws.provider_product_id = pp.id
       WHERE pp.status='active' AND p.status='active'
         AND (pp.title LIKE ? OR pp.sku LIKE ? OR pp.universal_code LIKE ?)
-      GROUP BY pp.id, pp.title, pp.sku, pp.universal_code, pp.base_price, pp.description, p.display_name
+      GROUP BY pp.id, pp.title, pp.sku, pp.universal_code, pp.base_price, pp.description, pp.category_id, p.display_name
       HAVING stock > 0
       ORDER BY pp.id DESC
       LIMIT 20
@@ -248,6 +276,15 @@ if ($action === 'new') {
   <p>Título: <input id='create-title' name='title' style='width:520px'></p>
   <p>SKU: <input id='create-sku' name='sku' style='width:220px'></p>
   <p>Código universal (8-14 dígitos): <input id='create-universal' name='universal_code' style='width:220px'></p>
+  <p>Categoría:
+    <select id='create-category' name='category_id'>
+      <option value='0'>Sin categoría</option>";
+foreach ($flatCategories as $cat) {
+  $indent = str_repeat('— ', (int)$cat['depth']);
+  echo "<option value='".h((string)$cat['id'])."'>".$indent.h($cat['name'])."</option>";
+}
+echo "</select>
+  </p>
   <p>Descripción:<br><textarea id='create-description' name='description' rows='3' style='width:90%'></textarea></p>
   <fieldset>
   <legend>Imágenes</legend>
@@ -299,6 +336,7 @@ if ($action === 'new') {
             data-sku='".h($pp['sku'] ?? '')."'
             data-universal='".h($pp['universal_code'] ?? '')."'
             data-description='".h($pp['description'] ?? '')."'
+            data-category-id='".h((string)($pp['category_id'] ?? 0))."'
             data-provider-id='".h((string)$pp['id'])."'
             data-images='".$imagesJson."'
           >Copiar</button>
@@ -313,6 +351,7 @@ if ($action === 'new') {
     var skuInput = document.getElementById('create-sku');
     var universalInput = document.getElementById('create-universal');
     var descriptionInput = document.getElementById('create-description');
+    var categorySelect = document.getElementById('create-category');
     var message = document.getElementById('copy-message');
     var form = document.getElementById('create-form');
     var buttons = document.querySelectorAll('.copy-provider-btn');
@@ -418,6 +457,7 @@ if ($action === 'new') {
         if (skuInput) skuInput.value = button.dataset.sku || '';
         if (universalInput) universalInput.value = button.dataset.universal || '';
         if (descriptionInput) descriptionInput.value = button.dataset.description || '';
+        if (categorySelect) categorySelect.value = button.dataset.categoryId || '0';
         var providerId = button.dataset.providerId || '';
         var images = [];
         try {

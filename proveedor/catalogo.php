@@ -15,6 +15,31 @@ $edit_product = null;
 $product_images = [];
 $image_errors = [];
 
+$categoryRows = $pdo->query("SELECT id, parent_id, name FROM categories ORDER BY name ASC, id ASC")->fetchAll();
+$categoriesByParent = [];
+foreach ($categoryRows as $cat) {
+  $parentId = $cat['parent_id'] ? (int)$cat['parent_id'] : 0;
+  $categoriesByParent[$parentId][] = $cat;
+}
+
+function flatten_categories(array $byParent, int $parentId, int $depth, array &$flat): void {
+  if (empty($byParent[$parentId])) {
+    return;
+  }
+  foreach ($byParent[$parentId] as $cat) {
+    $cat['depth'] = $depth;
+    $flat[] = $cat;
+    flatten_categories($byParent, (int)$cat['id'], $depth + 1, $flat);
+  }
+}
+
+$flatCategories = [];
+flatten_categories($categoriesByParent, 0, 0, $flatCategories);
+$categoryIdSet = [];
+foreach ($flatCategories as $cat) {
+  $categoryIdSet[(int)$cat['id']] = true;
+}
+
 if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '') === 'delete_image') {
   $product_id = isset($_POST['product_id']) ? (int)$_POST['product_id'] : 0;
   $image_id = isset($_POST['delete_image_id']) ? (int)$_POST['delete_image_id'] : 0;
@@ -43,24 +68,27 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '') === 'delete_
     $sku = trim((string)($_POST['sku'] ?? ''));
     $universalCode = trim((string)($_POST['universal_code'] ?? ''));
     $desc = trim((string)($_POST['description'] ?? ''));
+    $categoryId = (int)($_POST['category_id'] ?? 0);
+    $categoryValue = $categoryId > 0 ? $categoryId : null;
     $product_id = isset($_POST['product_id']) ? (int)$_POST['product_id'] : 0;
     if (!$title || $price<=0) $err="Completá título y precio base.";
     elseif ($universalCode !== '' && !preg_match('/^\d{8,14}$/', $universalCode)) $err = "El código universal debe tener entre 8 y 14 números.";
+    elseif ($categoryValue !== null && empty($categoryIdSet[$categoryId])) $err = "Categoría inválida.";
     else {
       if ($product_id > 0) {
         $st = $pdo->prepare("SELECT id FROM provider_products WHERE id=? AND provider_id=? LIMIT 1");
         $st->execute([$product_id,(int)$p['id']]);
         if ($st->fetch()) {
-          $pdo->prepare("UPDATE provider_products SET title=?, sku=?, universal_code=?, description=?, base_price=? WHERE id=? AND provider_id=?")
-              ->execute([$title,$sku?:null,$universalCode?:null,$desc?:null,$price,$product_id,(int)$p['id']]);
+          $pdo->prepare("UPDATE provider_products SET title=?, sku=?, universal_code=?, description=?, base_price=?, category_id=? WHERE id=? AND provider_id=?")
+              ->execute([$title,$sku?:null,$universalCode?:null,$desc?:null,$price,$categoryValue,$product_id,(int)$p['id']]);
           $msg="Actualizado.";
           $edit_id = $product_id;
         } else {
           $err="Producto inválido.";
         }
       } else {
-        $pdo->prepare("INSERT INTO provider_products(provider_id,title,sku,universal_code,description,base_price,status) VALUES(?,?,?,?,?,?,'active')")
-            ->execute([(int)$p['id'],$title,$sku?:null,$universalCode?:null,$desc?:null,$price]);
+        $pdo->prepare("INSERT INTO provider_products(provider_id,title,sku,universal_code,description,base_price,category_id,status) VALUES(?,?,?,?,?,?,?,'active')")
+            ->execute([(int)$p['id'],$title,$sku?:null,$universalCode?:null,$desc?:null,$price,$categoryValue]);
         $msg="Creado.";
         $product_id = (int)$pdo->lastInsertId();
         $edit_id = $product_id;
@@ -79,7 +107,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '') === 'delete_
 }
 
 if ($edit_id > 0) {
-  $st = $pdo->prepare("SELECT id,title,sku,universal_code,description,base_price FROM provider_products WHERE id=? AND provider_id=? LIMIT 1");
+  $st = $pdo->prepare("SELECT id,title,sku,universal_code,description,base_price,category_id FROM provider_products WHERE id=? AND provider_id=? LIMIT 1");
   $st->execute([$edit_id,(int)$p['id']]);
   $edit_product = $st->fetch();
   if (!$edit_product) {
@@ -133,6 +161,16 @@ echo "<form method='post' enctype='multipart/form-data'>
 <p>SKU: <input name='sku' style='width:220px' value='".h($edit_product['sku'] ?? '')."'></p>
 <p>Código universal (8-14 dígitos): <input name='universal_code' style='width:220px' value='".h($edit_product['universal_code'] ?? '')."'></p>
 <p>Precio base: <input name='base_price' style='width:160px' value='".h((string)($edit_product['base_price'] ?? ''))."'></p>
+<p>Categoría:
+  <select name='category_id'>
+    <option value='0'".(empty($edit_product['category_id']) ? ' selected' : '').">Sin categoría</option>";
+foreach ($flatCategories as $cat) {
+  $indent = str_repeat('— ', (int)$cat['depth']);
+  $selected = ((int)($edit_product['category_id'] ?? 0) === (int)$cat['id']) ? ' selected' : '';
+  echo "<option value='".h((string)$cat['id'])."'".$selected.">".$indent.h($cat['name'])."</option>";
+}
+echo "</select>
+</p>
 <p>Descripción:<br><textarea name='description' rows='3' style='width:90%'>".h($edit_product['description'] ?? '')."</textarea></p>
 <fieldset>
 <legend>Imágenes</legend>
