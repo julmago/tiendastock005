@@ -129,6 +129,10 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '') === 'create'
     }
 
     $msg="Producto creado.";
+    if (empty($image_errors)) {
+      header("Location: producto.php?id=".$productId."&store_id=".$storeId."&created=1");
+      exit;
+    }
   }
 }
 
