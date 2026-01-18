@@ -119,17 +119,41 @@ if ($edit_id > 0) {
 if ($edit_id > 0) {
   $product_images = product_images_fetch($pdo, 'provider_product', $edit_id);
 }
+$variantRows = [];
+if ($edit_id > 0) {
+  $variantSt = $pdo->prepare("
+    SELECT pv.color_id, pv.sku_variant, pv.stock_qty, c.name AS color_name
+    FROM product_variants pv
+    JOIN colors c ON c.id = pv.color_id
+    WHERE pv.owner_type='provider' AND pv.owner_id=? AND pv.product_id=?
+    ORDER BY pv.position ASC, pv.id ASC
+  ");
+  $variantSt->execute([(int)$p['id'], $edit_id]);
+  $variantRows = $variantSt->fetchAll();
+}
 
 $rows = $pdo->prepare("SELECT p.id, p.title, p.sku, p.universal_code, p.base_price, i.filename_base AS cover_image,
-    COALESCE(ws.qty_available,0) AS qty_available,
-    COALESCE(ws.qty_reserved,0) AS qty_reserved,
+    CASE
+      WHEN pv.variant_count > 0 THEN pv.variant_stock
+      ELSE COALESCE(ws.qty_available,0)
+    END AS qty_available,
+    CASE
+      WHEN pv.variant_count > 0 THEN 0
+      ELSE COALESCE(ws.qty_reserved,0)
+    END AS qty_reserved,
     COALESCE(SUM(oa.qty_allocated),0) AS qty_sold
   FROM provider_products p
   LEFT JOIN product_images i ON i.owner_type='provider_product' AND i.owner_id=p.id AND i.position=1
   LEFT JOIN warehouse_stock ws ON ws.provider_product_id=p.id
+  LEFT JOIN (
+    SELECT product_id, owner_id, COUNT(*) AS variant_count, COALESCE(SUM(stock_qty),0) AS variant_stock
+    FROM product_variants
+    WHERE owner_type='provider'
+    GROUP BY product_id, owner_id
+  ) pv ON pv.product_id = p.id AND pv.owner_id = p.provider_id
   LEFT JOIN order_allocations oa ON oa.provider_product_id=p.id
   WHERE p.provider_id=?
-  GROUP BY p.id, p.title, p.sku, p.universal_code, p.base_price, i.filename_base, ws.qty_available, ws.qty_reserved
+  GROUP BY p.id, p.title, p.sku, p.universal_code, p.base_price, i.filename_base, ws.qty_available, ws.qty_reserved, pv.variant_count, pv.variant_stock
   ORDER BY p.id DESC");
 $rows->execute([(int)$p['id']]);
 $list = $rows->fetchAll();
@@ -172,6 +196,24 @@ foreach ($flatCategories as $cat) {
 echo "</select>
 </p>
 <p>Descripción:<br><textarea name='description' rows='3' style='width:90%'>".h($edit_product['description'] ?? '')."</textarea></p>
+<fieldset>
+<legend>Variantes (Color)</legend>";
+if (!$variantRows) {
+  echo "<p>Sin variantes.</p>";
+} else {
+  echo "<table border='1' cellpadding='6' cellspacing='0'>
+  <tr><th>Color</th><th>SKU</th><th>Stock</th></tr>";
+  foreach ($variantRows as $variant) {
+    $skuVariant = $variant['sku_variant'] !== null && $variant['sku_variant'] !== '' ? $variant['sku_variant'] : '—';
+    echo "<tr>
+      <td>".h((string)$variant['color_name'])."</td>
+      <td>".h((string)$skuVariant)."</td>
+      <td>".h((string)$variant['stock_qty'])."</td>
+    </tr>";
+  }
+  echo "</table>";
+}
+echo "</fieldset>
 <fieldset>
 <legend>Imágenes</legend>
 <p><input type='file' name='images[]' multiple accept='image/*'></p>

@@ -79,6 +79,12 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '') === 'create'
     }
     $copy_source_id = (int)($copy_payload['product_id'] ?? 0);
     $copy_images = is_array($copy_payload['images'] ?? null) ? $copy_payload['images'] : [];
+    $copy_provider_id = 0;
+    if ($copy_source_id > 0) {
+      $providerIdSt = $pdo->prepare("SELECT provider_id FROM provider_products WHERE id=?");
+      $providerIdSt->execute([$copy_source_id]);
+      $copy_provider_id = (int)($providerIdSt->fetchColumn() ?? 0);
+    }
 
     $images_order_raw = trim((string)($_POST['images_order'] ?? ''));
     $order_tokens = $images_order_raw !== '' ? array_filter(array_map('trim', explode(',', $images_order_raw))) : [];
@@ -96,6 +102,34 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '') === 'create'
         $base_name = $image['filename_base'] ?? '';
         if ($base_name !== '' && isset($existing_bases[$base_name])) {
           $valid_copy_images[] = ['filename_base' => $base_name];
+        }
+      }
+    }
+
+    if ($copy_source_id > 0 && $copy_provider_id > 0) {
+      $variantSt = $pdo->prepare("
+        SELECT color_id, sku_variant, stock_qty, image_cover, position
+        FROM product_variants
+        WHERE owner_type='provider' AND owner_id=? AND product_id=?
+        ORDER BY position ASC, id ASC
+      ");
+      $variantSt->execute([$copy_provider_id, $copy_source_id]);
+      $variants = $variantSt->fetchAll();
+      if ($variants) {
+        $insertVariant = $pdo->prepare("
+          INSERT INTO product_variants(owner_type, owner_id, product_id, color_id, sku_variant, stock_qty, image_cover, position)
+          VALUES('vendor', ?, ?, ?, ?, ?, ?, ?)
+        ");
+        foreach ($variants as $variant) {
+          $insertVariant->execute([
+            $storeId,
+            $productId,
+            (int)$variant['color_id'],
+            $variant['sku_variant'],
+            (int)$variant['stock_qty'],
+            $variant['image_cover'],
+            (int)$variant['position'],
+          ]);
         }
       }
     }
@@ -201,7 +235,7 @@ if ($action === 'list') {
   foreach($storeProducts as $sp){
     $provStock = provider_stock_sum($pdo, (int)$sp['id']);
     $sell = current_sell_price($pdo, $currentStore, $sp);
-    $stockTotal = $provStock + (int)$sp['own_stock_qty'];
+    $stockTotal = store_product_stock_total($pdo, $storeId, $sp);
     $sellTxt = ($sell>0) ? '$'.number_format($sell,2,',','.') : 'Sin stock';
 
     $editUrl = "producto.php?id=".h((string)$sp['id'])."&store_id=".h((string)$storeId);
@@ -235,10 +269,21 @@ if ($action === 'new') {
     $like = "%{$providerQuery}%";
     $searchSt = $pdo->prepare("
       SELECT pp.id, pp.title, pp.sku, pp.universal_code, pp.base_price, pp.description, pp.category_id, p.display_name AS provider_name,
-             COALESCE(SUM(GREATEST(ws.qty_available - ws.qty_reserved,0)),0) AS stock
+             COALESCE(SUM(
+               CASE
+                 WHEN pv.variant_count > 0 THEN pv.variant_stock
+                 ELSE GREATEST(ws.qty_available - ws.qty_reserved,0)
+               END
+             ),0) AS stock
       FROM provider_products pp
       JOIN providers p ON p.id=pp.provider_id
       LEFT JOIN warehouse_stock ws ON ws.provider_product_id = pp.id
+      LEFT JOIN (
+        SELECT product_id, owner_id, COUNT(*) AS variant_count, COALESCE(SUM(stock_qty),0) AS variant_stock
+        FROM product_variants
+        WHERE owner_type='provider'
+        GROUP BY product_id, owner_id
+      ) pv ON pv.product_id = pp.id AND pv.owner_id = pp.provider_id
       WHERE pp.status='active' AND p.status='active'
         AND (pp.title LIKE ? OR pp.sku LIKE ? OR pp.universal_code LIKE ?)
       GROUP BY pp.id, pp.title, pp.sku, pp.universal_code, pp.base_price, pp.description, pp.category_id, p.display_name

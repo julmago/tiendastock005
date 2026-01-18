@@ -2,13 +2,27 @@
 function best_provider_source(PDO $pdo, int $store_product_id): ?array {
   $st = $pdo->prepare("
     SELECT sps.provider_product_id, pp.base_price,
-           (ws.qty_available - ws.qty_reserved) AS available
+           CASE
+             WHEN pv.variant_count > 0 THEN pv.variant_stock
+             ELSE (ws.qty_available - ws.qty_reserved)
+           END AS available
     FROM store_product_sources sps
     JOIN provider_products pp ON pp.id = sps.provider_product_id AND pp.status='active'
     JOIN providers p ON p.id = pp.provider_id AND p.status='active'
-    JOIN warehouse_stock ws ON ws.provider_product_id = pp.id
+    LEFT JOIN warehouse_stock ws ON ws.provider_product_id = pp.id
+    LEFT JOIN (
+      SELECT product_id, owner_id, COUNT(*) AS variant_count, COALESCE(SUM(stock_qty),0) AS variant_stock
+      FROM product_variants
+      WHERE owner_type='provider'
+      GROUP BY product_id, owner_id
+    ) pv ON pv.product_id = pp.id AND pv.owner_id = pp.provider_id
     WHERE sps.store_product_id = ? AND sps.enabled=1
-      AND (ws.qty_available - ws.qty_reserved) > 0
+      AND (
+        CASE
+          WHEN pv.variant_count > 0 THEN pv.variant_stock
+          ELSE (ws.qty_available - ws.qty_reserved)
+        END
+      ) > 0
     ORDER BY pp.base_price ASC, pp.id ASC
     LIMIT 1
   ");
@@ -17,15 +31,50 @@ function best_provider_source(PDO $pdo, int $store_product_id): ?array {
   return $r ?: null;
 }
 
+function product_variant_stock_info(PDO $pdo, string $ownerType, int $ownerId, int $productId): array {
+  $st = $pdo->prepare("
+    SELECT COUNT(*) AS total_variants,
+           COALESCE(SUM(stock_qty),0) AS stock_sum
+    FROM product_variants
+    WHERE owner_type=? AND owner_id=? AND product_id=?
+  ");
+  $st->execute([$ownerType, $ownerId, $productId]);
+  $row = $st->fetch();
+  return [
+    'count' => (int)($row['total_variants'] ?? 0),
+    'stock_sum' => (int)($row['stock_sum'] ?? 0),
+  ];
+}
+
 function provider_stock_sum(PDO $pdo, int $store_product_id): int {
   $st = $pdo->prepare("
-    SELECT COALESCE(SUM(GREATEST(ws.qty_available - ws.qty_reserved,0)),0) AS s
+    SELECT COALESCE(SUM(
+      CASE
+        WHEN pv.variant_count > 0 THEN pv.variant_stock
+        ELSE GREATEST(ws.qty_available - ws.qty_reserved,0)
+      END
+    ),0) AS s
     FROM store_product_sources sps
-    JOIN warehouse_stock ws ON ws.provider_product_id = sps.provider_product_id
+    JOIN provider_products pp ON pp.id = sps.provider_product_id
+    LEFT JOIN warehouse_stock ws ON ws.provider_product_id = pp.id
+    LEFT JOIN (
+      SELECT product_id, owner_id, COUNT(*) AS variant_count, COALESCE(SUM(stock_qty),0) AS variant_stock
+      FROM product_variants
+      WHERE owner_type='provider'
+      GROUP BY product_id, owner_id
+    ) pv ON pv.product_id = pp.id AND pv.owner_id = pp.provider_id
     WHERE sps.store_product_id=? AND sps.enabled=1
   ");
   $st->execute([$store_product_id]);
   return (int)($st->fetch()['s'] ?? 0);
+}
+
+function store_product_stock_total(PDO $pdo, int $storeId, array $product): int {
+  $info = product_variant_stock_info($pdo, 'vendor', $storeId, (int)$product['id']);
+  if ($info['count'] > 0) {
+    return $info['stock_sum'];
+  }
+  return provider_stock_sum($pdo, (int)$product['id']) + (int)($product['own_stock_qty'] ?? 0);
 }
 
 function price_value_present($value): bool {

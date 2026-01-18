@@ -139,6 +139,16 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '') === 'unlink_
 $productSt->execute([$productId,(int)$seller['id']]);
 $product = $productSt->fetch();
 $product_images = product_images_fetch($pdo, 'store_product', $productId);
+$variantRows = [];
+$variantSt = $pdo->prepare("
+  SELECT pv.color_id, pv.sku_variant, pv.stock_qty, c.name AS color_name
+  FROM product_variants pv
+  JOIN colors c ON c.id = pv.color_id
+  WHERE pv.owner_type='vendor' AND pv.owner_id=? AND pv.product_id=?
+  ORDER BY pv.position ASC, pv.id ASC
+");
+$variantSt->execute([$storeId, $productId]);
+$variantRows = $variantSt->fetchAll();
 
 $provStock = provider_stock_sum($pdo, (int)$product['id']);
 $sellDetails = current_sell_price_details($pdo, $product, $product);
@@ -148,7 +158,7 @@ if (!empty($sellDetails['min_applied'])) {
   $minAllowed = (float)$sellDetails['min_allowed'];
   $minAppliedMsg = "Mínimo permitido es $".number_format($minAllowed, 2, ',', '.').". Se aplicó el precio automático.";
 }
-$stockTotal = $provStock + (int)$product['own_stock_qty'];
+$stockTotal = store_product_stock_total($pdo, $storeId, $product);
 $sellTxt = ($sell>0) ? '$'.number_format($sell,2,',','.') : 'Sin stock';
 $priceSource = $sellDetails['price_source'] ?? 'provider';
 $priceSourceLabel = 'proveedor';
@@ -160,11 +170,22 @@ if ($priceSource === 'manual') {
 
 $linkedSt = $pdo->prepare("
   SELECT pp.id, pp.title, pp.sku, pp.universal_code, pp.base_price, p.display_name AS provider_name,
-         COALESCE(SUM(GREATEST(ws.qty_available - ws.qty_reserved,0)),0) AS stock
+         COALESCE(SUM(
+           CASE
+             WHEN pv.variant_count > 0 THEN pv.variant_stock
+             ELSE GREATEST(ws.qty_available - ws.qty_reserved,0)
+           END
+         ),0) AS stock
   FROM store_product_sources sps
   JOIN provider_products pp ON pp.id = sps.provider_product_id
   LEFT JOIN providers p ON p.id = pp.provider_id
   LEFT JOIN warehouse_stock ws ON ws.provider_product_id = pp.id
+  LEFT JOIN (
+    SELECT product_id, owner_id, COUNT(*) AS variant_count, COALESCE(SUM(stock_qty),0) AS variant_stock
+    FROM product_variants
+    WHERE owner_type='provider'
+    GROUP BY product_id, owner_id
+  ) pv ON pv.product_id = pp.id AND pv.owner_id = pp.provider_id
   WHERE sps.store_product_id = ? AND sps.enabled=1
   GROUP BY pp.id, pp.title, pp.sku, pp.universal_code, pp.base_price, p.display_name
   ORDER BY pp.id DESC
@@ -206,6 +227,24 @@ echo "</select>
 <p>Descripción:<br><textarea name='description' rows='4' style='width:90%'>".h((string)($product['description']??''))."</textarea></p>
 <button>Guardar cambios</button>
 </form><hr>";
+
+echo "<h3>Variantes (Color)</h3>";
+if (!$variantRows) {
+  echo "<p>Sin variantes.</p>";
+} else {
+  echo "<table border='1' cellpadding='6' cellspacing='0'>
+  <tr><th>Color</th><th>SKU</th><th>Stock</th></tr>";
+  foreach ($variantRows as $variant) {
+    $skuVariant = $variant['sku_variant'] !== null && $variant['sku_variant'] !== '' ? $variant['sku_variant'] : '—';
+    echo "<tr>
+      <td>".h((string)$variant['color_name'])."</td>
+      <td>".h((string)$skuVariant)."</td>
+      <td>".h((string)$variant['stock_qty'])."</td>
+    </tr>";
+  }
+  echo "</table>";
+}
+echo "<hr>";
 
 echo "<h3>Imágenes</h3>
 <form method='post' enctype='multipart/form-data'>

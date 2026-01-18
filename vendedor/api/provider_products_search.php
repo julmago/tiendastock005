@@ -69,10 +69,21 @@ $orderParams[] = $prefix;
 
 $sql = "
   SELECT pp.id, pp.title, pp.sku, pp.universal_code, pp.base_price, p.display_name AS provider_name,
-         COALESCE(SUM(GREATEST(ws.qty_available - ws.qty_reserved,0)),0) AS stock
+         COALESCE(SUM(
+           CASE
+             WHEN pv.variant_count > 0 THEN pv.variant_stock
+             ELSE GREATEST(ws.qty_available - ws.qty_reserved,0)
+           END
+         ),0) AS stock
   FROM provider_products pp
   JOIN providers p ON p.id=pp.provider_id
   LEFT JOIN warehouse_stock ws ON ws.provider_product_id = pp.id
+  LEFT JOIN (
+    SELECT product_id, owner_id, COUNT(*) AS variant_count, COALESCE(SUM(stock_qty),0) AS variant_stock
+    FROM product_variants
+    WHERE owner_type='provider'
+    GROUP BY product_id, owner_id
+  ) pv ON pv.product_id = pp.id AND pv.owner_id = pp.provider_id
   LEFT JOIN store_product_sources sps
     ON sps.provider_product_id = pp.id AND sps.store_product_id = ? AND sps.enabled=1
   WHERE pp.status='active' AND p.status='active'
@@ -109,12 +120,23 @@ if (!$out) {
     FROM provider_products pp
     JOIN providers p ON p.id=pp.provider_id
     LEFT JOIN warehouse_stock ws ON ws.provider_product_id = pp.id
+    LEFT JOIN (
+      SELECT product_id, owner_id, COUNT(*) AS variant_count, COALESCE(SUM(stock_qty),0) AS variant_stock
+      FROM product_variants
+      WHERE owner_type='provider'
+      GROUP BY product_id, owner_id
+    ) pv ON pv.product_id = pp.id AND pv.owner_id = pp.provider_id
     LEFT JOIN store_product_sources sps
       ON sps.provider_product_id = pp.id AND sps.store_product_id = ? AND sps.enabled=1
     WHERE pp.status='active' AND p.status='active'
       AND sps.id IS NULL
     GROUP BY pp.id
-    HAVING COALESCE(SUM(GREATEST(ws.qty_available - ws.qty_reserved,0)),0) > 0
+    HAVING COALESCE(SUM(
+      CASE
+        WHEN pv.variant_count > 0 THEN pv.variant_stock
+        ELSE GREATEST(ws.qty_available - ws.qty_reserved,0)
+      END
+    ),0) > 0
     LIMIT 1
   ";
   $checkSt = $pdo->prepare($checkSql);
