@@ -25,6 +25,9 @@ if (!$product) { page_header('Producto'); echo "<p>Producto inválido.</p>"; pag
 $storeId = (int)$product['store_id'];
 $product_images = [];
 $image_errors = [];
+if (!empty($_GET['created']) && empty($msg)) {
+  $msg = "Producto creado.";
+}
 
 if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '') === 'update_info') {
   $title = trim((string)($_POST['title'] ?? ''));
