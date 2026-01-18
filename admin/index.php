@@ -12,6 +12,7 @@ echo "<ul>
 <li><a href='/admin/settings.php'>Comisiones / MP extra</a></li>
 <li><a href='/admin/admins.php'>Admins internos (solo superadmin)</a></li>";
 if (($_SESSION['role'] ?? '') === 'superadmin') {
+  echo "<li><a href='/admin/categorias.php'>Categorías</a></li>";
   echo "<li><a href='/admin/formas_entrega.php'>Formas de entrega</a></li>";
 }
 echo "
