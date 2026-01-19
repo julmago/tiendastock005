@@ -203,6 +203,7 @@ if ($canManageVariants && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $skuVariant = trim((string)($_POST['sku_variant'] ?? ''));
         $imageCoverRaw = trim((string)($_POST['image_cover'] ?? ''));
         $imageValue = $role === 'superadmin' ? ($imageCoverRaw === '' ? null : $imageCoverRaw) : null;
+        $variantCount = 0;
         if ($colorId <= 0) {
           $err = "Color inválido.";
         } elseif ($skuVariant === '') {
@@ -221,6 +222,9 @@ if ($canManageVariants && $_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         if (empty($err)) {
+          $countSt = $pdo->prepare("SELECT COUNT(*) FROM product_variants WHERE owner_type='provider' AND owner_id=? AND product_id=?");
+          $countSt->execute([$providerId, $product_id]);
+          $variantCount = (int)$countSt->fetchColumn();
           $dupSt = $pdo->prepare("SELECT id FROM product_variants WHERE owner_type='provider' AND owner_id=? AND product_id=? AND color_id=? LIMIT 1");
           $dupSt->execute([$providerId, $product_id, $colorId]);
           if ($dupSt->fetch()) {
@@ -245,6 +249,10 @@ if ($canManageVariants && $_SERVER['REQUEST_METHOD'] === 'POST') {
           if ($uploadedPath !== null) {
             $pdo->prepare("UPDATE product_variants SET image_cover=? WHERE id=? AND owner_type='provider' AND owner_id=? AND product_id=?")
                 ->execute([$uploadedPath, $variantId, $providerId, $product_id]);
+          }
+          if ($variantCount === 0) {
+            $pdo->prepare("UPDATE warehouse_stock SET qty_available=0, qty_reserved=0 WHERE provider_product_id=?")
+                ->execute([$product_id]);
           }
           $msg = "Variante agregada.";
         }
@@ -622,7 +630,9 @@ if ($view === 'new' || $view === 'edit') {
 echo "<fieldset>
 <legend>Variantes (Color)</legend>";
 if (!$variantRows) {
-  echo "<p>Sin variantes.</p>";
+  echo "<p>Sin variantes.</p>
+  <p><button type='button' id='variant-toggle'>Crear variante</button></p>
+  <p>Si crea una variante el stock principal desaparecerá.</p>";
 } else {
   echo "<table border='1' cellpadding='6' cellspacing='0'>
   <tr><th>Color</th><th>SKU</th>";
@@ -713,8 +723,10 @@ if (!$variantRows) {
   echo "</table>";
 }
 if ($role === 'superadmin' || $role === 'provider') {
+  $variantFormStyle = $variantRows ? '' : " style='display:none;'";
+  $variantFormId = 'variant-form';
   echo "<h4>Agregar variante</h4>
-  <form method='post' enctype='multipart/form-data'>
+  <form method='post' enctype='multipart/form-data' id='".h($variantFormId)."'".$variantFormStyle.">
     <input type='hidden' name='csrf' value='".h(csrf_token())."'>
     <input type='hidden' name='action' value='add_variant'>
     <input type='hidden' name='product_id' value='".h((string)$edit_id)."'>
@@ -743,7 +755,18 @@ if ($role === 'superadmin' || $role === 'provider') {
     <button>Agregar</button>
   </form>";
 }
-echo "</fieldset>
+echo "<script>
+(function() {
+  var toggle = document.getElementById('variant-toggle');
+  var form = document.getElementById('variant-form');
+  if (!toggle || !form) return;
+  toggle.addEventListener('click', function() {
+    form.style.display = '';
+    toggle.style.display = 'none';
+  });
+})();
+</script>
+</fieldset>
 <hr>";
 }
 
