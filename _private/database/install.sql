@@ -230,22 +230,38 @@ CREATE TABLE IF NOT EXISTS colors (
   KEY idx_colors_active (active)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS sizes (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  name VARCHAR(100) NOT NULL,
+  code VARCHAR(4) NOT NULL,
+  active TINYINT(1) NOT NULL DEFAULT 1,
+  position INT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_sizes_name (name),
+  UNIQUE KEY uq_sizes_code (code),
+  KEY idx_sizes_active (active),
+  KEY idx_sizes_position (position)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS product_variants (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   owner_type ENUM('provider','vendor') NOT NULL,
   owner_id BIGINT UNSIGNED NOT NULL,
   product_id BIGINT UNSIGNED NOT NULL,
   color_id BIGINT UNSIGNED NOT NULL,
+  size_id BIGINT UNSIGNED NULL,
   sku_variant VARCHAR(120) NULL,
   stock_qty INT NOT NULL,
   image_cover VARCHAR(190) NULL,
   position INT NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  UNIQUE KEY uq_product_variant (owner_type, owner_id, product_id, color_id),
+  UNIQUE KEY uq_product_variant (owner_type, owner_id, product_id, color_id, size_id),
   KEY idx_variant_owner_product (owner_type, owner_id, product_id),
   KEY idx_variant_color (color_id),
-  CONSTRAINT fk_variants_color FOREIGN KEY (color_id) REFERENCES colors(id) ON DELETE RESTRICT
+  KEY idx_variant_size (size_id),
+  CONSTRAINT fk_variants_color FOREIGN KEY (color_id) REFERENCES colors(id) ON DELETE RESTRICT,
+  CONSTRAINT fk_variants_size FOREIGN KEY (size_id) REFERENCES sizes(id) ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS orders (
