@@ -180,13 +180,17 @@ if ($canManageVariants && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $variantHandled = true;
     $product_id = (int)($_POST['product_id'] ?? 0);
     $edit_id = $product_id;
+    $productSku = '';
     if ($product_id <= 0) {
       $err = "Producto inválido.";
     } else {
-      $st = $pdo->prepare("SELECT id FROM provider_products WHERE id=? AND provider_id=? LIMIT 1");
+      $st = $pdo->prepare("SELECT id, sku FROM provider_products WHERE id=? AND provider_id=? LIMIT 1");
       $st->execute([$product_id, $providerId]);
-      if (!$st->fetch()) {
+      $productRow = $st->fetch();
+      if (!$productRow) {
         $err = "Producto inválido.";
+      } else {
+        $productSku = trim((string)($productRow['sku'] ?? ''));
       }
     }
 
@@ -206,18 +210,30 @@ if ($canManageVariants && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $variantCount = 0;
         if ($colorId <= 0) {
           $err = "Color inválido.";
-        } elseif ($skuVariant === '') {
-          $err = "SKU de variante obligatorio.";
         } else {
           if ($role === 'superadmin') {
-            $colorSt = $pdo->prepare("SELECT id FROM colors WHERE id=? LIMIT 1");
+            $colorSt = $pdo->prepare("SELECT id, codigo FROM colors WHERE id=? LIMIT 1");
             $colorSt->execute([$colorId]);
           } else {
-            $colorSt = $pdo->prepare("SELECT id FROM colors WHERE id=? AND active=1 LIMIT 1");
+            $colorSt = $pdo->prepare("SELECT id, codigo FROM colors WHERE id=? AND active=1 LIMIT 1");
             $colorSt->execute([$colorId]);
           }
-          if (!$colorSt->fetch()) {
+          $colorRow = $colorSt->fetch();
+          if (!$colorRow) {
             $err = "Color inválido.";
+          } elseif ($skuVariant === '' && $productSku !== '') {
+            $colorCode = trim((string)($colorRow['codigo'] ?? ''));
+            if ($colorCode === '') {
+              $err = "El color no tiene código.";
+            } else {
+              $skuVariant = $productSku.'-'.$colorCode;
+            }
+          }
+        }
+
+        if (empty($err)) {
+          if ($skuVariant === '') {
+            $err = "SKU de variante obligatorio.";
           }
         }
 
@@ -263,14 +279,33 @@ if ($canManageVariants && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $imageCoverRaw = trim((string)($_POST['image_cover'] ?? ''));
         if ($variantId <= 0) {
           $err = "Variante inválida.";
-        } elseif ($skuVariant === '') {
-          $err = "SKU de variante obligatorio.";
         } else {
-          $currentSt = $pdo->prepare("SELECT image_cover FROM product_variants WHERE id=? AND owner_type='provider' AND owner_id=? AND product_id=?");
+          $currentSt = $pdo->prepare("
+            SELECT pv.image_cover, pv.color_id, c.codigo
+            FROM product_variants pv
+            JOIN colors c ON c.id = pv.color_id
+            WHERE pv.id=? AND pv.owner_type='provider' AND pv.owner_id=? AND pv.product_id=?
+          ");
           $currentSt->execute([$variantId, $providerId, $product_id]);
-          $currentImage = $currentSt->fetchColumn();
-          if ($currentImage === false) {
+          $currentRow = $currentSt->fetch();
+          if (!$currentRow) {
             $err = "Variante inválida.";
+          } else {
+            $currentImage = $currentRow['image_cover'] ?? null;
+            if ($skuVariant === '' && $productSku !== '') {
+              $colorCode = trim((string)($currentRow['codigo'] ?? ''));
+              if ($colorCode === '') {
+                $err = "El color no tiene código.";
+              } else {
+                $skuVariant = $productSku.'-'.$colorCode;
+              }
+            }
+          }
+        }
+
+        if (empty($err)) {
+          if ($skuVariant === '') {
+            $err = "SKU de variante obligatorio.";
           }
         }
 
@@ -466,9 +501,9 @@ if ($edit_id > 0) {
   $variantRows = $variantSt->fetchAll();
 }
 if ($role === 'superadmin') {
-  $colors = $pdo->query("SELECT id, name, active FROM colors ORDER BY name ASC, id ASC")->fetchAll();
+  $colors = $pdo->query("SELECT id, name, codigo, active FROM colors ORDER BY name ASC, id ASC")->fetchAll();
 } else {
-  $colors = $pdo->query("SELECT id, name, active FROM colors WHERE active=1 ORDER BY name ASC, id ASC")->fetchAll();
+  $colors = $pdo->query("SELECT id, name, codigo, active FROM colors WHERE active=1 ORDER BY name ASC, id ASC")->fetchAll();
 }
 
 $rows = $pdo->prepare("SELECT p.id, p.title, p.sku, p.universal_code, p.base_price, i.filename_base AS cover_image,
@@ -732,20 +767,22 @@ if ($role === 'superadmin' || $role === 'provider') {
     <input type='hidden' name='product_id' value='".h((string)$edit_id)."'>
     <input type='hidden' name='provider_id' value='".h((string)$providerId)."'>
     <p>Color:
-      <select name='color_id'>
+      <select name='color_id' id='variant-color-select'>
         <option value='0'>-- elegir --</option>";
   foreach ($colors as $color) {
     $colorLabel = $color['name'];
     if ($role === 'superadmin' && (int)$color['active'] !== 1) {
       $colorLabel .= " (inactivo)";
     }
-    echo "<option value='".h((string)$color['id'])."'>".h($colorLabel)."</option>";
+    $colorCode = trim((string)($color['codigo'] ?? ''));
+    $colorCodeAttr = $colorCode !== '' ? " data-code='".h($colorCode)."'" : "";
+    echo "<option value='".h((string)$color['id'])."'".$colorCodeAttr.">".h($colorLabel)."</option>";
   }
   echo "</select></p>";
   if ($role === 'superadmin') {
     echo "<p>Stock: <input name='stock_qty' style='width:80px'></p>";
   }
-  echo "<p>SKU: <input name='sku_variant' style='width:180px' required></p>";
+  echo "<p>SKU: <input name='sku_variant' id='variant-sku-input' style='width:180px' required></p>";
   if ($role === 'superadmin') {
     echo "<p>Imagen: <input name='image_cover' style='width:220px'></p>";
   } else {
@@ -764,6 +801,36 @@ echo "<script>
     form.style.display = '';
     toggle.style.display = 'none';
   });
+})();
+(function() {
+  var form = document.getElementById('variant-form');
+  if (!form) return;
+  var colorSelect = form.querySelector('select[name=\"color_id\"]');
+  var skuInput = form.querySelector('input[name=\"sku_variant\"]');
+  var productSkuInput = document.querySelector('input[name=\"sku\"]');
+  if (!colorSelect || !skuInput || !productSkuInput) return;
+
+  function updateVariantSku() {
+    var baseSku = productSkuInput.value.trim();
+    var selectedOption = colorSelect.options[colorSelect.selectedIndex];
+    if (!selectedOption || colorSelect.value === '0') {
+      skuInput.value = '';
+      return;
+    }
+    if (baseSku === '') {
+      skuInput.value = '';
+      return;
+    }
+    var colorCode = (selectedOption.getAttribute('data-code') || '').trim();
+    if (colorCode === '') {
+      skuInput.value = '';
+      alert('El color no tiene código');
+      return;
+    }
+    skuInput.value = baseSku + '-' + colorCode;
+  }
+
+  colorSelect.addEventListener('change', updateVariantSku);
 })();
 </script>
 </fieldset>
