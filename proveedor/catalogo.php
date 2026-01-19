@@ -202,41 +202,55 @@ if ($canManageVariants && $_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if (empty($err)) {
       if ($variantAction === 'add_variant') {
-        $colorId = (int)($_POST['color_id'] ?? 0);
-        $sizeId = (int)($_POST['size_id'] ?? 0);
+        $colorInput = (int)($_POST['color_id'] ?? 0);
+        $sizeInput = (int)($_POST['size_id'] ?? 0);
+        $colorId = $colorInput > 0 ? $colorInput : null;
+        $sizeId = $sizeInput > 0 ? $sizeInput : null;
         $stockQty = 0;
         $skuVariant = trim((string)($_POST['sku_variant'] ?? ''));
         $imageValue = null;
         $variantCount = 0;
-        if ($colorId <= 0) {
-          $err = "Color inválido.";
-        } elseif ($sizeId <= 0) {
-          $err = "Talle inválido.";
+        if ($colorId === null && $sizeId === null) {
+          $err = "Elegí un color y/o un talle.";
         } else {
-          if ($role === 'superadmin') {
-            $colorSt = $pdo->prepare("SELECT id, codigo FROM colors WHERE id=? LIMIT 1");
-            $colorSt->execute([$colorId]);
-            $sizeSt = $pdo->prepare("SELECT id, code FROM sizes WHERE id=? LIMIT 1");
-            $sizeSt->execute([$sizeId]);
-          } else {
-            $colorSt = $pdo->prepare("SELECT id, codigo FROM colors WHERE id=? AND active=1 LIMIT 1");
-            $colorSt->execute([$colorId]);
-            $sizeSt = $pdo->prepare("SELECT id, code FROM sizes WHERE id=? AND active=1 LIMIT 1");
-            $sizeSt->execute([$sizeId]);
-          }
-          $colorRow = $colorSt->fetch();
-          $sizeRow = $sizeSt->fetch();
-          if (!$colorRow) {
-            $err = "Color inválido.";
-          } elseif (!$sizeRow) {
-            $err = "Talle inválido.";
-          } elseif ($skuVariant === '' && $productSku !== '') {
-            $colorCode = trim((string)($colorRow['codigo'] ?? ''));
-            $sizeCode = trim((string)($sizeRow['code'] ?? ''));
-            if ($colorCode === '' || $sizeCode === '') {
-              $err = "El color o el talle no tienen código.";
+          $colorRow = null;
+          $sizeRow = null;
+          if ($colorId !== null) {
+            if ($role === 'superadmin') {
+              $colorSt = $pdo->prepare("SELECT id, codigo FROM colors WHERE id=? LIMIT 1");
             } else {
-              $skuVariant = $productSku.'-'.$colorCode.'-'.$sizeCode;
+              $colorSt = $pdo->prepare("SELECT id, codigo FROM colors WHERE id=? AND active=1 LIMIT 1");
+            }
+            $colorSt->execute([$colorId]);
+            $colorRow = $colorSt->fetch();
+            if (!$colorRow) {
+              $err = "Color inválido.";
+            }
+          }
+          if (empty($err) && $sizeId !== null) {
+            if ($role === 'superadmin') {
+              $sizeSt = $pdo->prepare("SELECT id, code FROM sizes WHERE id=? LIMIT 1");
+            } else {
+              $sizeSt = $pdo->prepare("SELECT id, code FROM sizes WHERE id=? AND active=1 LIMIT 1");
+            }
+            $sizeSt->execute([$sizeId]);
+            $sizeRow = $sizeSt->fetch();
+            if (!$sizeRow) {
+              $err = "Talle inválido.";
+            }
+          }
+          if (empty($err) && $skuVariant === '' && $productSku !== '') {
+            $pieces = [];
+            if ($colorRow) {
+              $colorCode = trim((string)($colorRow['codigo'] ?? ''));
+              $pieces[] = $colorCode !== '' ? $colorCode : 'C'.$colorId;
+            }
+            if ($sizeRow) {
+              $sizeCode = trim((string)($sizeRow['code'] ?? ''));
+              $pieces[] = $sizeCode !== '' ? $sizeCode : 'T'.$sizeId;
+            }
+            if ($pieces) {
+              $skuVariant = $productSku.'-'.implode('-', $pieces);
             }
           }
         }
@@ -251,10 +265,10 @@ if ($canManageVariants && $_SERVER['REQUEST_METHOD'] === 'POST') {
           $countSt = $pdo->prepare("SELECT COUNT(*) FROM product_variants WHERE owner_type='provider' AND owner_id=? AND product_id=?");
           $countSt->execute([$providerId, $product_id]);
           $variantCount = (int)$countSt->fetchColumn();
-          $dupSt = $pdo->prepare("SELECT id FROM product_variants WHERE owner_type='provider' AND owner_id=? AND product_id=? AND color_id=? AND size_id=? LIMIT 1");
+          $dupSt = $pdo->prepare("SELECT id FROM product_variants WHERE owner_type='provider' AND owner_id=? AND product_id=? AND color_id <=> ? AND size_id <=> ? LIMIT 1");
           $dupSt->execute([$providerId, $product_id, $colorId, $sizeId]);
           if ($dupSt->fetch()) {
-            $err = "Ya existe una variante para ese Color y Talle.";
+            $err = "Ya existe una variante para esa combinación.";
           }
         }
 
@@ -292,7 +306,7 @@ if ($canManageVariants && $_SERVER['REQUEST_METHOD'] === 'POST') {
           $currentSt = $pdo->prepare("
             SELECT pv.image_cover, pv.color_id, pv.size_id, c.codigo, s.code AS size_code
             FROM product_variants pv
-            JOIN colors c ON c.id = pv.color_id
+            LEFT JOIN colors c ON c.id = pv.color_id
             LEFT JOIN sizes s ON s.id = pv.size_id
             WHERE pv.id=? AND pv.owner_type='provider' AND pv.owner_id=? AND pv.product_id=?
           ");
@@ -303,12 +317,17 @@ if ($canManageVariants && $_SERVER['REQUEST_METHOD'] === 'POST') {
           } else {
             $currentImage = $currentRow['image_cover'] ?? null;
             if ($skuVariant === '' && $productSku !== '') {
-              $colorCode = trim((string)($currentRow['codigo'] ?? ''));
-              $sizeCode = trim((string)($currentRow['size_code'] ?? ''));
-              if ($colorCode === '' || $sizeCode === '') {
-                $err = "El color o el talle no tienen código.";
-              } else {
-                $skuVariant = $productSku.'-'.$colorCode.'-'.$sizeCode;
+              $pieces = [];
+              if (!empty($currentRow['color_id'])) {
+                $colorCode = trim((string)($currentRow['codigo'] ?? ''));
+                $pieces[] = $colorCode !== '' ? $colorCode : 'C'.$currentRow['color_id'];
+              }
+              if (!empty($currentRow['size_id'])) {
+                $sizeCode = trim((string)($currentRow['size_code'] ?? ''));
+                $pieces[] = $sizeCode !== '' ? $sizeCode : 'T'.$currentRow['size_id'];
+              }
+              if ($pieces) {
+                $skuVariant = $productSku.'-'.implode('-', $pieces);
               }
             }
           }
@@ -491,7 +510,7 @@ if ($edit_id > 0) {
     SELECT pv.id, pv.color_id, pv.size_id, pv.sku_variant, pv.stock_qty, pv.image_cover, pv.position,
            c.name AS color_name, s.name AS size_name
     FROM product_variants pv
-    JOIN colors c ON c.id = pv.color_id
+    LEFT JOIN colors c ON c.id = pv.color_id
     LEFT JOIN sizes s ON s.id = pv.size_id
     WHERE pv.owner_type='provider' AND pv.owner_id=? AND pv.product_id=?
     ORDER BY pv.position ASC, pv.id ASC
@@ -664,7 +683,7 @@ echo "
 
 if ($view === 'new' || $view === 'edit') {
 echo "<fieldset>
-<legend>Variantes (Color + Talle)</legend>";
+<legend>Variantes (Color y/o Talle)</legend>";
 if (!$variantRows) {
   echo "<p>Sin variantes.</p>
   <p><button type='button' id='variant-toggle'>Crear variante</button></p>
@@ -674,9 +693,11 @@ if (!$variantRows) {
   <tr><th>Color</th><th>Talle</th><th>SKU</th><th>Imagen</th><th>Acciones</th></tr>";
   foreach ($variantRows as $variant) {
     $skuVariant = $variant['sku_variant'] !== null && $variant['sku_variant'] !== '' ? $variant['sku_variant'] : '—';
+    $colorName = $variant['color_name'] !== null && $variant['color_name'] !== '' ? $variant['color_name'] : '—';
+    $sizeName = $variant['size_name'] !== null && $variant['size_name'] !== '' ? $variant['size_name'] : '—';
     echo "<tr>
-      <td>".h((string)$variant['color_name'])."</td>
-      <td>".h((string)($variant['size_name'] ?? '—'))."</td>";
+      <td>".h((string)$colorName)."</td>
+      <td>".h((string)$sizeName)."</td>";
     $formId = "variant-update-".(int)$variant['id'];
     $imageCover = (string)($variant['image_cover'] ?? '');
     $imagePreview = '';
@@ -719,7 +740,7 @@ if ($role === 'superadmin' || $role === 'provider') {
     <input type='hidden' name='provider_id' value='".h((string)$providerId)."'>
     <p>Color:
       <select name='color_id' id='variant-color-select'>
-        <option value='0'>-- elegir --</option>";
+        <option value='0'>-- ninguno --</option>";
   foreach ($colors as $color) {
     $colorLabel = $color['name'];
     if ($role === 'superadmin' && (int)$color['active'] !== 1) {
@@ -732,7 +753,7 @@ if ($role === 'superadmin' || $role === 'provider') {
   echo "</select></p>
     <p>Talle:
       <select name='size_id' id='variant-size-select'>
-        <option value='0'>-- elegir --</option>";
+        <option value='0'>-- ninguno --</option>";
   foreach ($sizes as $size) {
     $sizeLabel = $size['name'];
     if ($role === 'superadmin' && (int)$size['active'] !== 1) {
@@ -772,7 +793,13 @@ echo "<script>
     var baseSku = productSkuInput.value.trim();
     var selectedOption = colorSelect.options[colorSelect.selectedIndex];
     var sizeOption = sizeSelect.options[sizeSelect.selectedIndex];
-    if (!selectedOption || colorSelect.value === '0' || !sizeOption || sizeSelect.value === '0') {
+    if (!selectedOption || !sizeOption) {
+      skuInput.value = '';
+      return;
+    }
+    var colorValue = colorSelect.value;
+    var sizeValue = sizeSelect.value;
+    if (colorValue === '0' && sizeValue === '0') {
       skuInput.value = '';
       return;
     }
@@ -780,14 +807,20 @@ echo "<script>
       skuInput.value = '';
       return;
     }
-    var colorCode = (selectedOption.getAttribute('data-code') || '').trim();
-    var sizeCode = (sizeOption.getAttribute('data-code') || '').trim();
-    if (colorCode === '' || sizeCode === '') {
+    var pieces = [];
+    if (colorValue !== '0') {
+      var colorCode = (selectedOption.getAttribute('data-code') || '').trim();
+      pieces.push(colorCode !== '' ? colorCode : 'C' + colorValue);
+    }
+    if (sizeValue !== '0') {
+      var sizeCode = (sizeOption.getAttribute('data-code') || '').trim();
+      pieces.push(sizeCode !== '' ? sizeCode : 'T' + sizeValue);
+    }
+    if (!pieces.length) {
       skuInput.value = '';
-      alert('El color o el talle no tienen código');
       return;
     }
-    skuInput.value = baseSku + '-' + colorCode + '-' + sizeCode;
+    skuInput.value = baseSku + '-' + pieces.join('-');
   }
 
   colorSelect.addEventListener('change', updateVariantSku);
