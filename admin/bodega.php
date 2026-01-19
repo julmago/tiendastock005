@@ -1,6 +1,7 @@
 <?php
 require __DIR__.'/../config.php';
 require __DIR__.'/../_inc/layout.php';
+require __DIR__.'/../lib/product_images.php';
 csrf_check();
 require_any_role(['superadmin','admin'], '/admin/login.php');
 
@@ -27,13 +28,42 @@ $pp = $pdo->query("
   ORDER BY pp.id DESC LIMIT 200
 ")->fetchAll();
 
-$stock = $pdo->query("
-  SELECT ws.qty_available, ws.qty_reserved, pp.title, p.display_name AS provider_name
-  FROM warehouse_stock ws
-  JOIN provider_products pp ON pp.id=ws.provider_product_id
+$products = $pdo->query("
+  SELECT pp.id, pp.title, pp.sku, p.display_name AS provider_name, i.filename_base AS cover_image,
+         COALESCE(ws.qty_available,0) AS qty_available,
+         COALESCE(pv.variant_count,0) AS variant_count
+  FROM provider_products pp
   JOIN providers p ON p.id=pp.provider_id
-  ORDER BY ws.qty_available DESC LIMIT 200
+  LEFT JOIN product_images i ON i.owner_type='provider_product' AND i.owner_id=pp.id AND i.position=1
+  LEFT JOIN warehouse_stock ws ON ws.provider_product_id=pp.id
+  LEFT JOIN (
+    SELECT product_id, owner_id, COUNT(*) AS variant_count
+    FROM product_variants
+    WHERE owner_type='provider'
+    GROUP BY product_id, owner_id
+  ) pv ON pv.product_id=pp.id AND pv.owner_id=pp.provider_id
+  ORDER BY pp.id DESC LIMIT 200
 ")->fetchAll();
+
+$variantsByProductId = [];
+$productIds = array_map(static fn($row) => (int)$row['id'], $products);
+if ($productIds) {
+  $placeholders = implode(',', array_fill(0, count($productIds), '?'));
+  $variantSt = $pdo->prepare("
+    SELECT product_id, sku_variant, stock_qty
+    FROM product_variants
+    WHERE owner_type='provider' AND product_id IN ($placeholders)
+    ORDER BY product_id ASC, position ASC, id ASC
+  ");
+  $variantSt->execute($productIds);
+  foreach ($variantSt->fetchAll() as $variant) {
+    $productId = (int)$variant['product_id'];
+    if (!isset($variantsByProductId[$productId])) {
+      $variantsByProductId[$productId] = [];
+    }
+    $variantsByProductId[$productId][] = $variant;
+  }
+}
 
 page_header('Bodega');
 if (!empty($msg)) echo "<p style='color:green'>".h($msg)."</p>";
@@ -52,9 +82,35 @@ echo "</select></p>
 <button>Registrar</button>
 </form><hr>";
 
-echo "<table border='1' cellpadding='6' cellspacing='0'><tr><th>Proveedor</th><th>Producto</th><th>Disp</th><th>Res</th></tr>";
-foreach($stock as $s){
-  echo "<tr><td>".h($s['provider_name'])."</td><td>".h($s['title'])."</td><td>".h((string)$s['qty_available'])."</td><td>".h((string)$s['qty_reserved'])."</td></tr>";
+echo "<table border='1' cellpadding='6' cellspacing='0'><tr><th>Imagen</th><th>Proveedor</th><th>Título</th><th>Sku</th><th>Stock</th></tr>";
+foreach($products as $product){
+  $productId = (int)$product['id'];
+  if (!empty($product['cover_image'])) {
+    $thumb = product_image_with_size($product['cover_image'], 150);
+    $thumb_url = "/uploads/provider_products/".h((string)$productId)."/".h($thumb);
+    $image_cell = "<img src='".$thumb_url."' alt='' width='50' height='50'>";
+  } else {
+    $image_cell = "—";
+  }
+
+  $variants = $variantsByProductId[$productId] ?? [];
+  if ($variants) {
+    $rowspan = count($variants);
+    $first = array_shift($variants);
+    echo "<tr>";
+    echo "<td rowspan='".h((string)$rowspan)."'>".$image_cell."</td>";
+    echo "<td rowspan='".h((string)$rowspan)."'>".h($product['provider_name'])."</td>";
+    echo "<td rowspan='".h((string)$rowspan)."'>".h($product['title'])."</td>";
+    echo "<td>".h($first['sku_variant'] ?? '')."</td>";
+    echo "<td>".h((string)$first['stock_qty'])."</td>";
+    echo "</tr>";
+    foreach ($variants as $variant) {
+      echo "<tr><td>".h($variant['sku_variant'] ?? '')."</td><td>".h((string)$variant['stock_qty'])."</td></tr>";
+    }
+    continue;
+  }
+
+  echo "<tr><td>".$image_cell."</td><td>".h($product['provider_name'])."</td><td>".h($product['title'])."</td><td>".h($product['sku'] ?? '')."</td><td>".h((string)$product['qty_available'])."</td></tr>";
 }
 echo "</table>";
 page_footer();
