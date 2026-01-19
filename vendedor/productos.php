@@ -108,7 +108,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '') === 'create'
 
     if ($copy_source_id > 0 && $copy_provider_id > 0) {
       $variantSt = $pdo->prepare("
-        SELECT color_id, sku_variant, stock_qty, image_cover, position
+        SELECT color_id, size_id, sku_variant, stock_qty, image_cover, position
         FROM product_variants
         WHERE owner_type='provider' AND owner_id=? AND product_id=?
         ORDER BY position ASC, id ASC
@@ -117,14 +117,15 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '') === 'create'
       $variants = $variantSt->fetchAll();
       if ($variants) {
         $insertVariant = $pdo->prepare("
-          INSERT INTO product_variants(owner_type, owner_id, product_id, color_id, sku_variant, stock_qty, image_cover, position)
-          VALUES('vendor', ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO product_variants(owner_type, owner_id, product_id, color_id, size_id, sku_variant, stock_qty, image_cover, position)
+          VALUES('vendor', ?, ?, ?, ?, ?, ?, ?, ?)
         ");
         foreach ($variants as $variant) {
           $insertVariant->execute([
             $storeId,
             $productId,
             (int)$variant['color_id'],
+            $variant['size_id'] !== null ? (int)$variant['size_id'] : null,
             $variant['sku_variant'],
             (int)$variant['stock_qty'],
             $variant['image_cover'],
