@@ -10,16 +10,20 @@ $editColor = null;
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   $action = $_POST['action'] ?? '';
   $name = trim((string)($_POST['name'] ?? ''));
+  $codigo = trim((string)($_POST['codigo'] ?? ''));
   $hex = trim((string)($_POST['hex'] ?? ''));
   $active = (int)($_POST['active'] ?? 1) ? 1 : 0;
+  $codigoValue = $codigo === '' ? null : $codigo;
   $hexValue = $hex === '' ? null : $hex;
 
   if ($action === 'add') {
     if ($name === '') {
       $err = "Falta nombre.";
+    } elseif (mb_strlen($codigo) > 4) {
+      $err = "El código no puede tener más de 4 caracteres.";
     } else {
-      $pdo->prepare("INSERT INTO colors(name, hex, active) VALUES(?,?,?)")
-          ->execute([$name, $hexValue, $active]);
+      $pdo->prepare("INSERT INTO colors(name, codigo, hex, active) VALUES(?,?,?,?)")
+          ->execute([$name, $codigoValue, $hexValue, $active]);
       $msg = "Color creado.";
     }
   }
@@ -31,9 +35,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } elseif ($name === '') {
       $err = "Falta nombre.";
       $editId = $colorId;
+    } elseif (mb_strlen($codigo) > 4) {
+      $err = "El código no puede tener más de 4 caracteres.";
+      $editId = $colorId;
     } else {
-      $pdo->prepare("UPDATE colors SET name=?, hex=?, active=? WHERE id=?")
-          ->execute([$name, $hexValue, $active, $colorId]);
+      $pdo->prepare("UPDATE colors SET name=?, codigo=?, hex=?, active=? WHERE id=?")
+          ->execute([$name, $codigoValue, $hexValue, $active, $colorId]);
       $msg = "Color actualizado.";
       $editId = $colorId;
     }
@@ -41,7 +48,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 if ($editId > 0) {
-  $st = $pdo->prepare("SELECT id, name, hex, active FROM colors WHERE id=? LIMIT 1");
+  $st = $pdo->prepare("SELECT id, name, codigo, hex, active FROM colors WHERE id=? LIMIT 1");
   $st->execute([$editId]);
   $editColor = $st->fetch();
   if (!$editColor) {
@@ -50,7 +57,7 @@ if ($editId > 0) {
   }
 }
 
-$colors = $pdo->query("SELECT id, name, hex, active FROM colors ORDER BY name ASC, id ASC")->fetchAll();
+$colors = $pdo->query("SELECT id, name, codigo, hex, active FROM colors ORDER BY name ASC, id ASC")->fetchAll();
 
 page_header('Colores');
 if (!empty($msg)) echo "<p style='color:green'>".h($msg)."</p>";
@@ -62,6 +69,7 @@ echo "<form method='post'>
   <input type='hidden' name='action' value='".($editId > 0 ? "update" : "add")."'>
   <input type='hidden' name='color_id' value='".h((string)($editColor['id'] ?? ''))."'>
   <p>Nombre: <input name='name' style='width:280px' value='".h($editColor['name'] ?? '')."'></p>
+  <p>Código: <input name='codigo' maxlength='4' style='width:140px' value='".h($editColor['codigo'] ?? '')."'></p>
   <p>Hex (opcional): <input name='hex' style='width:140px' value='".h($editColor['hex'] ?? '')."'></p>
   <p>Estado:
     <select name='active'>
@@ -75,12 +83,13 @@ if ($editId > 0) {
 }
 echo "</form><hr>";
 
-echo "<table border='1' cellpadding='6' cellspacing='0'><tr><th>ID</th><th>Nombre</th><th>Hex</th><th>Estado</th><th></th></tr>";
+echo "<table border='1' cellpadding='6' cellspacing='0'><tr><th>ID</th><th>Nombre</th><th>Código</th><th>Hex</th><th>Estado</th><th></th></tr>";
 foreach ($colors as $color) {
   $statusLabel = ((int)$color['active'] === 1) ? 'Activo' : 'Inactivo';
   echo "<tr>
     <td>".h((string)$color['id'])."</td>
     <td>".h((string)$color['name'])."</td>
+    <td>".h((string)($color['codigo'] ?? ''))."</td>
     <td>".h((string)($color['hex'] ?? ''))."</td>
     <td>".h($statusLabel)."</td>
     <td><a href='/admin/colores.php?edit_id=".h((string)$color['id'])."'>Modificar</a></td>
