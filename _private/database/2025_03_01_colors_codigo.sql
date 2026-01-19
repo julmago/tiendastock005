@@ -1,0 +1,1 @@
+ALTER TABLE colors ADD codigo VARCHAR(4) NULL AFTER name;
