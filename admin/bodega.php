@@ -6,18 +6,38 @@ csrf_check();
 require_any_role(['superadmin','admin'], '/admin/login.php');
 
 if ($_SERVER['REQUEST_METHOD']==='POST') {
-  $ppId = (int)($_POST['provider_product_id'] ?? 0);
-  $qty = (int)($_POST['qty_received'] ?? 0);
-  if (!$ppId || $qty<=0) $err="Elegí producto y cantidad.";
-  else {
-    $pdo->prepare("INSERT INTO warehouse_receipts(provider_id,provider_product_id,qty_received,note,created_by_user_id)
-      SELECT pp.provider_id, pp.id, ?, ?, ? FROM provider_products pp WHERE pp.id=?")
-      ->execute([$qty, (string)($_POST['note'] ?? ''), (int)($_SESSION['uid']??0), $ppId]);
+  $action = (string)($_POST['action'] ?? '');
+  if ($action === 'update_stock') {
+    $productId = (int)($_POST['product_id'] ?? 0);
+    $variantId = (int)($_POST['variant_id'] ?? 0);
+    $stockInput = filter_var($_POST['stock'] ?? null, FILTER_VALIDATE_INT);
+    if (!$productId || $stockInput === false || $stockInput < 0) {
+      $err = "Ingresá un stock válido.";
+    } else {
+      if ($variantId) {
+        $pdo->prepare("UPDATE product_variants SET stock_qty=? WHERE id=? AND owner_type='provider'")
+          ->execute([$stockInput, $variantId]);
+      } else {
+        $pdo->prepare("INSERT INTO warehouse_stock(provider_product_id,qty_available,qty_reserved)
+          VALUES(?, ?, 0) ON DUPLICATE KEY UPDATE qty_available = VALUES(qty_available)")
+          ->execute([$productId, $stockInput]);
+      }
+      $msg = "Stock actualizado.";
+    }
+  } else {
+    $ppId = (int)($_POST['provider_product_id'] ?? 0);
+    $qty = (int)($_POST['qty_received'] ?? 0);
+    if (!$ppId || $qty<=0) $err="Elegí producto y cantidad.";
+    else {
+      $pdo->prepare("INSERT INTO warehouse_receipts(provider_id,provider_product_id,qty_received,note,created_by_user_id)
+        SELECT pp.provider_id, pp.id, ?, ?, ? FROM provider_products pp WHERE pp.id=?")
+        ->execute([$qty, (string)($_POST['note'] ?? ''), (int)($_SESSION['uid']??0), $ppId]);
 
-    $pdo->prepare("INSERT INTO warehouse_stock(provider_product_id,qty_available,qty_reserved)
-      VALUES(?, ?, 0) ON DUPLICATE KEY UPDATE qty_available = qty_available + VALUES(qty_available)")
-      ->execute([$ppId,$qty]);
-    $msg="Recepción OK.";
+      $pdo->prepare("INSERT INTO warehouse_stock(provider_product_id,qty_available,qty_reserved)
+        VALUES(?, ?, 0) ON DUPLICATE KEY UPDATE qty_available = qty_available + VALUES(qty_available)")
+        ->execute([$ppId,$qty]);
+      $msg="Recepción OK.";
+    }
   }
 }
 
@@ -50,7 +70,7 @@ $productIds = array_map(static fn($row) => (int)$row['id'], $products);
 if ($productIds) {
   $placeholders = implode(',', array_fill(0, count($productIds), '?'));
   $variantSt = $pdo->prepare("
-    SELECT product_id, sku_variant, stock_qty
+    SELECT id, product_id, sku_variant, stock_qty
     FROM product_variants
     WHERE owner_type='provider' AND product_id IN ($placeholders)
     ORDER BY product_id ASC, position ASC, id ASC
@@ -82,7 +102,7 @@ echo "</select></p>
 <button>Registrar</button>
 </form><hr>";
 
-echo "<table border='1' cellpadding='6' cellspacing='0'><tr><th>Imagen</th><th>Proveedor</th><th>Título</th><th>Sku</th><th>Stock</th></tr>";
+echo "<table border='1' cellpadding='6' cellspacing='0'><tr><th>Imagen</th><th>Proveedor</th><th>Título</th><th>Sku</th><th>Stock</th><th>Acciones</th></tr>";
 foreach($products as $product){
   $productId = (int)$product['id'];
   if (!empty($product['cover_image'])) {
@@ -97,20 +117,48 @@ foreach($products as $product){
   if ($variants) {
     $rowspan = count($variants);
     $first = array_shift($variants);
+    $formId = "stock-form-".$productId."-".(int)$first['id'];
+    $stockInput = "<input type='number' name='stock' min='0' style='width:90px' form='".h($formId)."' value='".h((string)$first['stock_qty'])."'>";
     echo "<tr>";
     echo "<td rowspan='".h((string)$rowspan)."'>".$image_cell."</td>";
     echo "<td rowspan='".h((string)$rowspan)."'>".h($product['provider_name'])."</td>";
     echo "<td rowspan='".h((string)$rowspan)."'>".h($product['title'])."</td>";
     echo "<td>".h($first['sku_variant'] ?? '')."</td>";
-    echo "<td>".h((string)$first['stock_qty'])."</td>";
+    echo "<td>".$stockInput."</td>";
+    echo "<td><form id='".h($formId)."' method='post'>
+      <input type='hidden' name='csrf' value='".h(csrf_token())."'>
+      <input type='hidden' name='action' value='update_stock'>
+      <input type='hidden' name='product_id' value='".h((string)$productId)."'>
+      <input type='hidden' name='variant_id' value='".h((string)$first['id'])."'>
+      <button>Guardar</button>
+    </form></td>";
     echo "</tr>";
     foreach ($variants as $variant) {
-      echo "<tr><td>".h($variant['sku_variant'] ?? '')."</td><td>".h((string)$variant['stock_qty'])."</td></tr>";
+      $variantFormId = "stock-form-".$productId."-".(int)$variant['id'];
+      $variantStockInput = "<input type='number' name='stock' min='0' style='width:90px' form='".h($variantFormId)."' value='".h((string)$variant['stock_qty'])."'>";
+      echo "<tr><td>".h($variant['sku_variant'] ?? '')."</td><td>".$variantStockInput."</td><td>
+        <form id='".h($variantFormId)."' method='post'>
+          <input type='hidden' name='csrf' value='".h(csrf_token())."'>
+          <input type='hidden' name='action' value='update_stock'>
+          <input type='hidden' name='product_id' value='".h((string)$productId)."'>
+          <input type='hidden' name='variant_id' value='".h((string)$variant['id'])."'>
+          <button>Guardar</button>
+        </form>
+      </td></tr>";
     }
     continue;
   }
 
-  echo "<tr><td>".$image_cell."</td><td>".h($product['provider_name'])."</td><td>".h($product['title'])."</td><td>".h($product['sku'] ?? '')."</td><td>".h((string)$product['qty_available'])."</td></tr>";
+  $productFormId = "stock-form-".$productId;
+  $productStockInput = "<input type='number' name='stock' min='0' style='width:90px' form='".h($productFormId)."' value='".h((string)$product['qty_available'])."'>";
+  echo "<tr><td>".$image_cell."</td><td>".h($product['provider_name'])."</td><td>".h($product['title'])."</td><td>".h($product['sku'] ?? '')."</td><td>".$productStockInput."</td><td>
+    <form id='".h($productFormId)."' method='post'>
+      <input type='hidden' name='csrf' value='".h(csrf_token())."'>
+      <input type='hidden' name='action' value='update_stock'>
+      <input type='hidden' name='product_id' value='".h((string)$productId)."'>
+      <button>Guardar</button>
+    </form>
+  </td></tr>";
 }
 echo "</table>";
 page_footer();
