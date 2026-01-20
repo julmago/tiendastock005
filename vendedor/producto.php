@@ -467,6 +467,100 @@ echo "</select>
 <button>Guardar cambios</button>
 </form><hr>";
 
+echo "<h3>Imágenes</h3>
+<form method='post' enctype='multipart/form-data'>
+<input type='hidden' name='csrf' value='".h(csrf_token())."'>
+<input type='hidden' name='action' id='images_action' value='update_images'>
+<input type='hidden' name='delete_image_id' id='delete_image_id' value=''>
+<p><input type='file' name='images[]' multiple accept='image/*'></p>
+<input type='hidden' name='images_order' id='images_order' value=''>
+<ul id='images-list'>";
+if ($product_images) {
+  foreach ($product_images as $index => $image) {
+    $thumb = product_image_with_size($image['filename_base'], 150);
+    $thumb_url = "/uploads/store_products/".h((string)$productId)."/".h($thumb);
+    $cover_label = $index === 0 ? "Portada" : "";
+    echo "<li data-id='".h((string)$image['id'])."'>
+<img src='".$thumb_url."' alt='' width='80' height='80'>
+ <span class='cover-label'>".h($cover_label)."</span>
+ <button type='button' class='move-up'>↑</button>
+ <button type='button' class='move-down'>↓</button>
+ <button type='button' class='img-delete' data-image-id='".h((string)$image['id'])."'>X</button>
+</li>";
+  }
+} else {
+  echo "<li>No hay imágenes cargadas.</li>";
+}
+echo "</ul>
+<button>Guardar imágenes</button>
+</form>
+<script>
+(function() {
+  var list = document.getElementById('images-list');
+  var orderInput = document.getElementById('images_order');
+  var deleteInput = document.getElementById('delete_image_id');
+  var actionInput = document.getElementById('images_action');
+  var form = list ? list.closest('form') : null;
+  if (!list || !orderInput) return;
+
+  function updateOrder() {
+    var ids = [];
+    var items = list.querySelectorAll('li[data-id]');
+    items.forEach(function(item, index) {
+      ids.push(item.getAttribute('data-id'));
+      var label = item.querySelector('.cover-label');
+      if (label) {
+        label.textContent = index === 0 ? 'Portada' : '';
+      }
+    });
+    orderInput.value = ids.join(',');
+  }
+
+  list.addEventListener('click', function(event) {
+    if (event.target.classList.contains('img-delete')) {
+      var imageId = event.target.getAttribute('data-image-id');
+      if (!imageId) return;
+      if (!confirm('¿Eliminar esta imagen?')) return;
+      if (deleteInput) deleteInput.value = imageId;
+      if (actionInput) actionInput.value = 'delete_image';
+      if (form) form.submit();
+      return;
+    }
+    if (event.target.classList.contains('move-up') || event.target.classList.contains('move-down')) {
+      var item = event.target.closest('li');
+      if (!item) return;
+      if (event.target.classList.contains('move-up')) {
+        var prev = item.previousElementSibling;
+        if (prev && prev.hasAttribute('data-id')) {
+          list.insertBefore(item, prev);
+        }
+      } else {
+        var next = item.nextElementSibling;
+        if (next) {
+          list.insertBefore(next, item);
+        }
+      }
+      updateOrder();
+    }
+  });
+
+  updateOrder();
+})();
+</script><hr>";
+
+echo "<h3>Stock y precio</h3>";
+if (!empty($minAppliedMsg)) echo "<p style='color:#b00'>".h($minAppliedMsg)."</p>";
+echo "
+<p>Stock proveedor: ".h((string)$provStock)." | Precio actual (".h($priceSourceLabel)."): ".h($sellTxt)." (total: ".h((string)$stockTotal).")</p>
+<form method='post'>
+<input type='hidden' name='csrf' value='".h(csrf_token())."'>
+<input type='hidden' name='action' value='update_stock'>
+Own qty <input name='own_stock_qty' value='".h((string)$product['own_stock_qty'])."' style='width:70px'>
+Own $ <input name='own_stock_price' value='".h((string)($product['own_stock_price']??''))."' style='width:90px'>
+Manual $ <input name='manual_price' value='".h((string)($product['manual_price']??''))."' style='width:90px'>
+<button>Guardar</button>
+</form><hr>";
+
 echo "<fieldset>
 <legend>Variantes (Color y/o Talle)</legend>";
 if (!$variantRows) {
@@ -598,100 +692,6 @@ echo "<script>
 </script>
 </fieldset>
 <hr>";
-
-echo "<h3>Imágenes</h3>
-<form method='post' enctype='multipart/form-data'>
-<input type='hidden' name='csrf' value='".h(csrf_token())."'>
-<input type='hidden' name='action' id='images_action' value='update_images'>
-<input type='hidden' name='delete_image_id' id='delete_image_id' value=''>
-<p><input type='file' name='images[]' multiple accept='image/*'></p>
-<input type='hidden' name='images_order' id='images_order' value=''>
-<ul id='images-list'>";
-if ($product_images) {
-  foreach ($product_images as $index => $image) {
-    $thumb = product_image_with_size($image['filename_base'], 150);
-    $thumb_url = "/uploads/store_products/".h((string)$productId)."/".h($thumb);
-    $cover_label = $index === 0 ? "Portada" : "";
-    echo "<li data-id='".h((string)$image['id'])."'>
-<img src='".$thumb_url."' alt='' width='80' height='80'>
- <span class='cover-label'>".h($cover_label)."</span>
- <button type='button' class='move-up'>↑</button>
- <button type='button' class='move-down'>↓</button>
- <button type='button' class='img-delete' data-image-id='".h((string)$image['id'])."'>X</button>
-</li>";
-  }
-} else {
-  echo "<li>No hay imágenes cargadas.</li>";
-}
-echo "</ul>
-<button>Guardar imágenes</button>
-</form>
-<script>
-(function() {
-  var list = document.getElementById('images-list');
-  var orderInput = document.getElementById('images_order');
-  var deleteInput = document.getElementById('delete_image_id');
-  var actionInput = document.getElementById('images_action');
-  var form = list ? list.closest('form') : null;
-  if (!list || !orderInput) return;
-
-  function updateOrder() {
-    var ids = [];
-    var items = list.querySelectorAll('li[data-id]');
-    items.forEach(function(item, index) {
-      ids.push(item.getAttribute('data-id'));
-      var label = item.querySelector('.cover-label');
-      if (label) {
-        label.textContent = index === 0 ? 'Portada' : '';
-      }
-    });
-    orderInput.value = ids.join(',');
-  }
-
-  list.addEventListener('click', function(event) {
-    if (event.target.classList.contains('img-delete')) {
-      var imageId = event.target.getAttribute('data-image-id');
-      if (!imageId) return;
-      if (!confirm('¿Eliminar esta imagen?')) return;
-      if (deleteInput) deleteInput.value = imageId;
-      if (actionInput) actionInput.value = 'delete_image';
-      if (form) form.submit();
-      return;
-    }
-    if (event.target.classList.contains('move-up') || event.target.classList.contains('move-down')) {
-      var item = event.target.closest('li');
-      if (!item) return;
-      if (event.target.classList.contains('move-up')) {
-        var prev = item.previousElementSibling;
-        if (prev && prev.hasAttribute('data-id')) {
-          list.insertBefore(item, prev);
-        }
-      } else {
-        var next = item.nextElementSibling;
-        if (next) {
-          list.insertBefore(next, item);
-        }
-      }
-      updateOrder();
-    }
-  });
-
-  updateOrder();
-})();
-</script><hr>";
-
-echo "<h3>Stock y precio</h3>";
-if (!empty($minAppliedMsg)) echo "<p style='color:#b00'>".h($minAppliedMsg)."</p>";
-echo "
-<p>Stock proveedor: ".h((string)$provStock)." | Precio actual (".h($priceSourceLabel)."): ".h($sellTxt)." (total: ".h((string)$stockTotal).")</p>
-<form method='post'>
-<input type='hidden' name='csrf' value='".h(csrf_token())."'>
-<input type='hidden' name='action' value='update_stock'>
-Own qty <input name='own_stock_qty' value='".h((string)$product['own_stock_qty'])."' style='width:70px'>
-Own $ <input name='own_stock_price' value='".h((string)($product['own_stock_price']??''))."' style='width:90px'>
-Manual $ <input name='manual_price' value='".h((string)($product['manual_price']??''))."' style='width:90px'>
-<button>Guardar</button>
-</form><hr>";
 
 echo "<div id='provider-section'>
 <h3>Proveedor</h3>
