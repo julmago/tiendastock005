@@ -266,6 +266,7 @@ CREATE TABLE IF NOT EXISTS product_variants (
   color_key BIGINT UNSIGNED GENERATED ALWAYS AS (IFNULL(color_id,0)) STORED,
   size_key BIGINT UNSIGNED GENERATED ALWAYS AS (IFNULL(size_id,0)) STORED,
   sku_variant VARCHAR(120) NULL,
+  universal_code VARCHAR(14) NULL,
   stock_qty INT NOT NULL,
   own_stock_price DECIMAL(12,2) NULL,
   manual_price DECIMAL(12,2) NULL,
@@ -277,6 +278,7 @@ CREATE TABLE IF NOT EXISTS product_variants (
   KEY idx_variant_owner_product (owner_type, owner_id, product_id),
   KEY idx_variant_color (color_id),
   KEY idx_variant_size (size_id),
+  KEY idx_variants_universal_code (universal_code),
   CONSTRAINT fk_variants_color FOREIGN KEY (color_id) REFERENCES colors(id) ON DELETE RESTRICT,
   CONSTRAINT fk_variants_size FOREIGN KEY (size_id) REFERENCES sizes(id) ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

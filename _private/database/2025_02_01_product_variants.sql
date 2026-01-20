@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS product_variants (
   product_id BIGINT UNSIGNED NOT NULL,
   color_id BIGINT UNSIGNED NOT NULL,
   sku_variant VARCHAR(120) NULL,
+  universal_code VARCHAR(14) NULL,
   stock_qty INT NOT NULL,
   image_cover VARCHAR(190) NULL,
   position INT NOT NULL DEFAULT 0,
@@ -24,5 +25,6 @@ CREATE TABLE IF NOT EXISTS product_variants (
   UNIQUE KEY uq_product_variant (owner_type, owner_id, product_id, color_id),
   KEY idx_variant_owner_product (owner_type, owner_id, product_id),
   KEY idx_variant_color (color_id),
+  KEY idx_variants_universal_code (universal_code),
   CONSTRAINT fk_variants_color FOREIGN KEY (color_id) REFERENCES colors(id) ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
