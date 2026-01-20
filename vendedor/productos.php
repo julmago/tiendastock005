@@ -181,6 +181,15 @@ function variant_draft_cleanup(string $token): void {
   @rmdir($dir);
 }
 
+function reset_variant_drafts(int $storeId): void {
+  $existing = $_SESSION['store_variant_drafts'][$storeId] ?? null;
+  $existingToken = is_array($existing) ? (string)($existing['token'] ?? '') : '';
+  if ($existingToken !== '') {
+    variant_draft_cleanup($existingToken);
+  }
+  unset($_SESSION['store_variant_drafts'][$storeId]);
+}
+
 function variant_copy_from_provider(?string $relativePath, int $variantId, array &$imageErrors): ?string {
   if (!$relativePath) {
     return null;
@@ -345,7 +354,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'copy_
       $err = "Producto inválido.";
     } else {
       $providerVariantsSt = $pdo->prepare("
-        SELECT pv.id, pv.color_id, pv.size_id, pv.sku_variant, pv.universal_code, pv.stock_qty, pv.own_stock_price, pv.manual_price, pv.image_cover
+        SELECT pv.id, pv.color_id, pv.size_id, pv.sku_variant, pv.universal_code, pv.image_cover
         FROM product_variants pv
         WHERE pv.owner_type='provider' AND pv.owner_id=? AND pv.product_id=?
         ORDER BY pv.position ASC, pv.id ASC
@@ -355,78 +364,47 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'copy_
       if (!$providerVariants) {
         $err = "El producto no tiene variantes.";
       } else {
-        $pdo->prepare("INSERT INTO store_products(store_id,title,sku,universal_code,description,category_id,status,own_stock_qty,own_stock_price,manual_price)
-                       VALUES(?,?,?,?,?,?,'active',0,NULL,NULL)")
-            ->execute([
-              $storeId,
-              $providerProduct['title'],
-              $providerProduct['sku'] ?: null,
-              $providerProduct['universal_code'] ?: null,
-              $providerProduct['description'] ?: null,
-              $providerProduct['category_id'] ? (int)$providerProduct['category_id'] : null,
-            ]);
-        $productId = (int)$pdo->lastInsertId();
-        $upload_dir = __DIR__.'/../uploads/store_products/'.$productId;
-        if (!is_dir($upload_dir)) {
-          mkdir($upload_dir, 0775, true);
-        }
         $imageCopySt = $pdo->prepare("SELECT filename_base FROM product_images WHERE owner_type='provider_product' AND owner_id=? ORDER BY position ASC");
         $imageCopySt->execute([$providerProductId]);
         $providerImages = $imageCopySt->fetchAll(PDO::FETCH_COLUMN);
-        if ($providerImages) {
-          $imagesToCopy = [];
-          foreach ($providerImages as $baseName) {
-            if ($baseName !== '') {
-              $imagesToCopy[] = ['filename_base' => $baseName];
-            }
-          }
-          if ($imagesToCopy) {
-            $source_dir = __DIR__.'/../uploads/provider_products/'.$providerProductId;
-            $target_dir = __DIR__.'/../uploads/store_products/'.$productId;
-            $next_position = 0;
-            product_images_copy_from_provider($pdo, $providerProductId, $productId, $imagesToCopy, $source_dir, $target_dir, $image_sizes, $image_errors, $next_position);
+        $imagesToCopy = [];
+        foreach ($providerImages as $baseName) {
+          if ($baseName !== '') {
+            $imagesToCopy[] = ['filename_base' => $baseName];
           }
         }
 
-        $insertVariant = $pdo->prepare("
-          INSERT INTO product_variants(owner_type, owner_id, product_id, color_id, size_id, sku_variant, universal_code, stock_qty, own_stock_price, manual_price, image_cover, position)
-          VALUES('vendor', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ");
-        $position = 0;
+        reset_variant_drafts($storeId);
+        $variantDraftToken = bin2hex(random_bytes(8));
+        $variantDrafts = [];
         foreach ($providerVariants as $variant) {
-          $position++;
-          $variantPrice = null;
-          if ($variant['own_stock_price'] !== null && $variant['own_stock_price'] !== '') {
-            $variantPrice = (float)$variant['own_stock_price'];
-          } elseif ($variant['manual_price'] !== null && $variant['manual_price'] !== '') {
-            $variantPrice = (float)$variant['manual_price'];
-          } elseif ($providerProduct['base_price'] !== null && $providerProduct['base_price'] !== '') {
-            $variantPrice = (float)$providerProduct['base_price'];
-          }
-          $insertVariant->execute([
-            $storeId,
-            $productId,
-            $variant['color_id'] !== null ? (int)$variant['color_id'] : null,
-            $variant['size_id'] !== null ? (int)$variant['size_id'] : null,
-            $variant['sku_variant'] ?: null,
-            $variant['universal_code'] ?: null,
-            (int)$variant['stock_qty'],
-            $variantPrice,
-            null,
-            null,
-            $position,
-          ]);
-          $variantId = (int)$pdo->lastInsertId();
-          $imagePath = (string)($variant['image_cover'] ?? '');
-          if ($imagePath !== '') {
-            $finalPath = variant_copy_from_provider($imagePath, $variantId, $image_errors);
-            if ($finalPath !== null) {
-              $pdo->prepare("UPDATE product_variants SET image_cover=? WHERE id=? AND owner_type='vendor' AND owner_id=? AND product_id=?")
-                  ->execute([$finalPath, $variantId, $storeId, $productId]);
-            }
-          }
+          $variantDrafts[] = [
+            'id' => bin2hex(random_bytes(8)),
+            'color_id' => $variant['color_id'] !== null ? (int)$variant['color_id'] : null,
+            'size_id' => $variant['size_id'] !== null ? (int)$variant['size_id'] : null,
+            'sku_variant' => $variant['sku_variant'] ?: null,
+            'universal_code' => $variant['universal_code'] ?: null,
+            'image_path' => null,
+            'provider_image_path' => $variant['image_cover'] ?? null,
+          ];
         }
-        header("Location: producto.php?id=".$productId."&store_id=".$storeId."&created=1");
+        $_SESSION['store_variant_drafts'][$storeId] = [
+          'token' => $variantDraftToken,
+          'variants' => $variantDrafts,
+        ];
+
+        $_SESSION['store_product_drafts'][$storeId] = [
+          'title' => $providerProduct['title'] ?? '',
+          'sku' => $providerProduct['sku'] ?? '',
+          'universal_code' => $providerProduct['universal_code'] ?? '',
+          'description' => $providerProduct['description'] ?? '',
+          'category_id' => $providerProduct['category_id'] ? (int)$providerProduct['category_id'] : 0,
+          'provider_product_id' => $providerProductId,
+          'copy_images' => $imagesToCopy,
+          'copied' => true,
+        ];
+
+        header("Location: productos.php?action=new&store_id=".$storeId."&copied=1");
         exit;
       }
     }
@@ -440,8 +418,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'copy_
     $err = "Variante inválida.";
   } else {
     $variantSt = $pdo->prepare("
-      SELECT pp.id, pp.provider_id, pp.title, pp.base_price, pp.description, pp.category_id,
-             pv.sku_variant, pv.universal_code, pv.stock_qty, pv.own_stock_price, pv.manual_price
+      SELECT pp.id, pp.provider_id, pp.title, pp.description, pp.category_id,
+             pv.color_id, pv.size_id, pv.sku_variant, pv.universal_code, pv.image_cover
       FROM provider_products pp
       JOIN product_variants pv
         ON pv.product_id = pp.id
@@ -455,50 +433,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'copy_
     if (!$providerVariant) {
       $err = "Variante inválida.";
     } else {
-      $variantPrice = null;
-      if ($providerVariant['own_stock_price'] !== null && $providerVariant['own_stock_price'] !== '') {
-        $variantPrice = (float)$providerVariant['own_stock_price'];
-      } elseif ($providerVariant['manual_price'] !== null && $providerVariant['manual_price'] !== '') {
-        $variantPrice = (float)$providerVariant['manual_price'];
-      } elseif ($providerVariant['base_price'] !== null && $providerVariant['base_price'] !== '') {
-        $variantPrice = (float)$providerVariant['base_price'];
-      }
-
-      $pdo->prepare("INSERT INTO store_products(store_id,title,sku,universal_code,description,category_id,status,own_stock_qty,own_stock_price,manual_price)
-                     VALUES(?,?,?,?,?,?,'active',?,?,NULL)")
-          ->execute([
-            $storeId,
-            $providerVariant['title'],
-            $providerVariant['sku_variant'] ?: null,
-            $providerVariant['universal_code'] ?: null,
-            $providerVariant['description'] ?: null,
-            $providerVariant['category_id'] ? (int)$providerVariant['category_id'] : null,
-            (int)$providerVariant['stock_qty'],
-            $variantPrice,
-          ]);
-      $productId = (int)$pdo->lastInsertId();
-      $upload_dir = __DIR__.'/../uploads/store_products/'.$productId;
-      if (!is_dir($upload_dir)) {
-        mkdir($upload_dir, 0775, true);
-      }
       $imageCopySt = $pdo->prepare("SELECT filename_base FROM product_images WHERE owner_type='provider_product' AND owner_id=? ORDER BY position ASC");
       $imageCopySt->execute([$providerProductId]);
       $providerImages = $imageCopySt->fetchAll(PDO::FETCH_COLUMN);
-      if ($providerImages) {
-        $imagesToCopy = [];
-        foreach ($providerImages as $baseName) {
-          if ($baseName !== '') {
-            $imagesToCopy[] = ['filename_base' => $baseName];
-          }
-        }
-        if ($imagesToCopy) {
-          $source_dir = __DIR__.'/../uploads/provider_products/'.$providerProductId;
-          $target_dir = __DIR__.'/../uploads/store_products/'.$productId;
-          $next_position = 0;
-          product_images_copy_from_provider($pdo, $providerProductId, $productId, $imagesToCopy, $source_dir, $target_dir, $image_sizes, $image_errors, $next_position);
+      $imagesToCopy = [];
+      foreach ($providerImages as $baseName) {
+        if ($baseName !== '') {
+          $imagesToCopy[] = ['filename_base' => $baseName];
         }
       }
-      header("Location: producto.php?id=".$productId."&store_id=".$storeId."&created=1");
+
+      reset_variant_drafts($storeId);
+      $variantDraftToken = bin2hex(random_bytes(8));
+      $variantDrafts = [[
+        'id' => bin2hex(random_bytes(8)),
+        'color_id' => $providerVariant['color_id'] !== null ? (int)$providerVariant['color_id'] : null,
+        'size_id' => $providerVariant['size_id'] !== null ? (int)$providerVariant['size_id'] : null,
+        'sku_variant' => $providerVariant['sku_variant'] ?: null,
+        'universal_code' => $providerVariant['universal_code'] ?: null,
+        'image_path' => null,
+        'provider_image_path' => $providerVariant['image_cover'] ?? null,
+      ]];
+      $_SESSION['store_variant_drafts'][$storeId] = [
+        'token' => $variantDraftToken,
+        'variants' => $variantDrafts,
+      ];
+
+      $_SESSION['store_product_drafts'][$storeId] = [
+        'title' => $providerVariant['title'] ?? '',
+        'sku' => $providerVariant['sku_variant'] ?? '',
+        'universal_code' => $providerVariant['universal_code'] ?? '',
+        'description' => $providerVariant['description'] ?? '',
+        'category_id' => $providerVariant['category_id'] ? (int)$providerVariant['category_id'] : 0,
+        'provider_product_id' => $providerProductId,
+        'copy_images' => $imagesToCopy,
+        'copied' => true,
+      ];
+
+      header("Location: productos.php?action=new&store_id=".$storeId."&copied=1");
       exit;
     }
   }
@@ -642,8 +614,15 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '') === 'create'
         ]);
         $variantId = (int)$pdo->lastInsertId();
         $imagePath = (string)($draft['image_path'] ?? '');
+        $providerImagePath = (string)($draft['provider_image_path'] ?? '');
         if ($imagePath !== '') {
           $finalPath = variant_draft_move_to_final($imagePath, $variantDraftToken, $variantId, $image_errors);
+          if ($finalPath !== null) {
+            $pdo->prepare("UPDATE product_variants SET image_cover=? WHERE id=? AND owner_type='vendor' AND owner_id=? AND product_id=?")
+                ->execute([$finalPath, $variantId, $storeId, $productId]);
+          }
+        } elseif ($providerImagePath !== '') {
+          $finalPath = variant_copy_from_provider($providerImagePath, $variantId, $image_errors);
           if ($finalPath !== null) {
             $pdo->prepare("UPDATE product_variants SET image_cover=? WHERE id=? AND owner_type='vendor' AND owner_id=? AND product_id=?")
                 ->execute([$finalPath, $variantId, $storeId, $productId]);
@@ -658,6 +637,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '') === 'create'
 
     $msg="Producto creado.";
     if (empty($image_errors)) {
+      unset($_SESSION['store_product_drafts'][$storeId]);
       header("Location: producto.php?id=".$productId."&store_id=".$storeId."&created=1");
       exit;
     }
@@ -729,6 +709,40 @@ if ($action === 'list') {
 }
 
 if ($action === 'new') {
+  $draftData = $_SESSION['store_product_drafts'][$storeId] ?? [];
+  $formValues = [
+    'title' => (string)($_POST['title'] ?? ($draftData['title'] ?? '')),
+    'sku' => (string)($_POST['sku'] ?? ($draftData['sku'] ?? '')),
+    'universal_code' => (string)($_POST['universal_code'] ?? ($draftData['universal_code'] ?? '')),
+    'description' => (string)($_POST['description'] ?? ($draftData['description'] ?? '')),
+    'category_id' => (int)($_POST['category_id'] ?? ($draftData['category_id'] ?? 0)),
+  ];
+  $copyPayloadValue = (string)($_POST['copy_images_payload'] ?? '');
+  if ($copyPayloadValue === '' && !empty($draftData['provider_product_id'])) {
+    $copyPayloadValue = json_encode([
+      'product_id' => (int)$draftData['provider_product_id'],
+      'images' => $draftData['copy_images'] ?? [],
+    ]);
+  }
+  $copyPayloadDecoded = $copyPayloadValue !== '' ? json_decode($copyPayloadValue, true) : [];
+  if (!is_array($copyPayloadDecoded)) {
+    $copyPayloadDecoded = [];
+  }
+  $copyPayloadProductId = (int)($copyPayloadDecoded['product_id'] ?? 0);
+  $copyPayloadImages = is_array($copyPayloadDecoded['images'] ?? null) ? $copyPayloadDecoded['images'] : [];
+  $imagesOrderValue = (string)($_POST['images_order'] ?? '');
+  if ($imagesOrderValue === '' && $copyPayloadImages) {
+    $tokens = [];
+    foreach ($copyPayloadImages as $image) {
+      $baseName = $image['filename_base'] ?? '';
+      if ($baseName !== '') {
+        $tokens[] = 'copy:'.$baseName;
+      }
+    }
+    $imagesOrderValue = implode(',', $tokens);
+  }
+  $showCopyMessage = !empty($draftData['copied']) || !empty($_GET['copied']);
+
   $providerQuery = trim((string)($_GET['provider_q'] ?? ''));
   $providerProducts = [];
   if ($providerQuery !== '') {
@@ -806,29 +820,46 @@ if ($action === 'new') {
   <form method='post' id='create-form' enctype='multipart/form-data'>
   <input type='hidden' name='csrf' value='".h(csrf_token())."'>
   <input type='hidden' name='action' value='create'>
-  <input type='hidden' name='images_order' id='images_order' value=''>
-  <input type='hidden' name='copy_images_payload' id='copy_images_payload' value=''>
-  <p>Título: <input id='create-title' name='title' style='width:520px'></p>
-  <p>SKU: <input id='create-sku' name='sku' style='width:220px'></p>
-  <p>Código universal (8-14 dígitos): <input id='create-universal' name='universal_code' style='width:220px'></p>
+  <input type='hidden' name='images_order' id='images_order' value='".h($imagesOrderValue)."'>
+  <input type='hidden' name='copy_images_payload' id='copy_images_payload' value='".h($copyPayloadValue)."'>
+  <p>Título: <input id='create-title' name='title' style='width:520px' value='".h($formValues['title'])."'></p>
+  <p>SKU: <input id='create-sku' name='sku' style='width:220px' value='".h($formValues['sku'])."'></p>
+  <p>Código universal (8-14 dígitos): <input id='create-universal' name='universal_code' style='width:220px' value='".h($formValues['universal_code'])."'></p>
   <p>Categoría:
     <select id='create-category' name='category_id'>
       <option value='0'>Sin categoría</option>";
 foreach ($flatCategories as $cat) {
   $indent = str_repeat('— ', (int)$cat['depth']);
-  echo "<option value='".h((string)$cat['id'])."'>".$indent.h($cat['name'])."</option>";
+  $selected = (int)$cat['id'] === $formValues['category_id'] ? " selected" : "";
+  echo "<option value='".h((string)$cat['id'])."'".$selected.">".$indent.h($cat['name'])."</option>";
 }
 echo "</select>
   </p>
-  <p>Descripción:<br><textarea id='create-description' name='description' rows='3' style='width:90%'></textarea></p>
+  <p>Descripción:<br><textarea id='create-description' name='description' rows='3' style='width:90%'>".h($formValues['description'])."</textarea></p>
   <fieldset>
   <legend>Imágenes</legend>
   <p><input type='file' name='images[]' id='images-input' multiple accept='image/*'></p>
   <ul id='images-list'>
-    <li>No hay imágenes cargadas.</li>
+    ".($copyPayloadImages ? '' : '<li>No hay imágenes cargadas.</li>');
+  if ($copyPayloadImages && $copyPayloadProductId > 0) {
+    foreach ($copyPayloadImages as $image) {
+      $baseName = $image['filename_base'] ?? '';
+      if ($baseName === '') {
+        continue;
+      }
+      $thumb = preg_replace('/(\\.[^.]+)$/', '_150$1', $baseName);
+      $thumbUrl = "/uploads/provider_products/".h((string)$copyPayloadProductId)."/".h($thumb);
+      echo "<li data-kind='copy' data-key='".h($baseName)."'>
+        <img src='".$thumbUrl."' alt='' width='80' height='80'> <span class='cover-label'></span>
+        <button type='button' class='move-up'>↑</button>
+        <button type='button' class='move-down'>↓</button>
+      </li>";
+    }
+  }
+  echo "
   </ul>
   </fieldset>
-  <p id='copy-message' style='color:green; display:none;'></p>
+  <p id='copy-message' style='color:green; ".($showCopyMessage ? "" : "display:none;")."'>Datos cargados desde proveedor. Revisá y presioná Crear para publicar.</p>
   <button>Crear</button>
   </form><hr>";
 
@@ -861,8 +892,10 @@ echo "</select>
       }
       $skuVariant = $draft['sku_variant'] !== null && $draft['sku_variant'] !== '' ? $draft['sku_variant'] : '—';
       $imageCover = (string)($draft['image_path'] ?? '');
+      $providerImageCover = (string)($draft['provider_image_path'] ?? '');
       $universalCode = $draft['universal_code'] !== null && $draft['universal_code'] !== '' ? $draft['universal_code'] : '—';
-      $imagePreview = $imageCover !== '' ? "<img src='".h($imageCover)."' alt='' width='50' height='50'> " : '—';
+      $previewSource = $imageCover !== '' ? $imageCover : $providerImageCover;
+      $imagePreview = $previewSource !== '' ? "<img src='".h($previewSource)."' alt='' width='50' height='50'> " : '—';
       echo "<tr>
         <td>".h($colorName)."</td>
         <td>".h($sizeName)."</td>
