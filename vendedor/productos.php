@@ -237,6 +237,36 @@ if ($action === 'new' || ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array(($_P
   $variantDrafts = $variantDraftState['variants'] ?? [];
 }
 
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'delete_product') {
+  $action = 'list';
+  $productId = (int)($_POST['product_id'] ?? 0);
+  if ($productId <= 0) {
+    $err = "Producto inválido.";
+  } else {
+    $productSt = $pdo->prepare("SELECT id FROM store_products WHERE id=? AND store_id=? LIMIT 1");
+    $productSt->execute([$productId, $storeId]);
+    $product = $productSt->fetch();
+    if (!$product) {
+      $err = "Producto inválido.";
+    } else {
+      $pdo->beginTransaction();
+      try {
+        $pdo->prepare("DELETE FROM product_variants WHERE owner_type='vendor' AND owner_id=? AND product_id=?")
+            ->execute([$storeId, $productId]);
+        $pdo->prepare("DELETE FROM product_images WHERE owner_type='store_product' AND owner_id=?")
+            ->execute([$productId]);
+        $pdo->prepare("DELETE FROM store_products WHERE id=? AND store_id=?")
+            ->execute([$productId, $storeId]);
+        $pdo->commit();
+        $msg = "Producto eliminado.";
+      } catch (Throwable $e) {
+        $pdo->rollBack();
+        $err = "No se pudo eliminar el producto.";
+      }
+    }
+  }
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array(($_POST['action'] ?? ''), ['add_variant_draft', 'delete_variant_draft'], true)) {
   $action = 'new';
   $variantAction = $_POST['action'] ?? '';
@@ -677,7 +707,7 @@ if ($action === 'list') {
   }
 
   echo "<table border='1' cellpadding='6' cellspacing='0'>
-  <tr><th>Imagen</th><th>Título</th><th>SKU</th><th>Código universal</th><th>Stock prov</th><th>Own qty</th><th>Own $</th><th>Manual $</th><th>Precio actual</th></tr>";
+  <tr><th>Imagen</th><th>Título</th><th>SKU</th><th>Código universal</th><th>Stock prov</th><th>Own qty</th><th>Own $</th><th>Manual $</th><th>Precio actual</th><th>Acciones</th></tr>";
   foreach($storeProducts as $sp){
     $provStock = provider_stock_sum($pdo, (int)$sp['id']);
     $sell = current_sell_price($pdo, $currentStore, $sp);
@@ -693,6 +723,12 @@ if ($action === 'list') {
     } else {
       $coverCell = "—";
     }
+    $deleteForm = "<form method='post' action='".$listUrl."' style='margin:0;' onsubmit='return confirm(\"¿Eliminar producto?\")'>
+      <input type='hidden' name='action' value='delete_product'>
+      <input type='hidden' name='product_id' value='".h((string)$sp['id'])."'>
+      <input type='hidden' name='csrf' value='".h(csrf_token())."'>
+      <button type='submit'>Eliminar</button>
+    </form>";
     echo "<tr>
       <td>".$coverCell."</td>
       <td><a href='".$editUrl."'>".h($sp['title'])."</a></td>
@@ -703,6 +739,7 @@ if ($action === 'list') {
       <td>".h((string)($sp['own_stock_price']??''))."</td>
       <td>".h((string)($sp['manual_price']??''))."</td>
       <td>".h($sellTxt)." (total: ".h((string)$stockTotal).")</td>
+      <td>".$deleteForm."</td>
     </tr>";
   }
   echo "</table>";
