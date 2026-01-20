@@ -47,6 +47,93 @@ foreach ($flatCategories as $cat) {
   $categoryIdSet[(int)$cat['id']] = true;
 }
 
+$variant_image_size = 600;
+
+function variant_image_relative_path(int $variantId, string $filename): string {
+  return "/uploads/store_variant_images/".$variantId."/".$filename;
+}
+
+function variant_image_disk_path(string $relativePath): string {
+  return __DIR__.'/../'.ltrim($relativePath, '/');
+}
+
+function variant_image_delete_existing(?string $imageCover): void {
+  if (!$imageCover) {
+    return;
+  }
+  if (strpos($imageCover, '/uploads/store_variant_images/') !== 0) {
+    return;
+  }
+  $diskPath = variant_image_disk_path($imageCover);
+  if (is_file($diskPath) && !unlink($diskPath)) {
+    error_log("No se pudo borrar la imagen de variante {$diskPath}");
+  }
+}
+
+function variant_image_process_upload(array $file, int $variantId, int $maxImageSize, int $targetSize, array &$imageErrors): ?string {
+  if (($file['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
+    return null;
+  }
+  if (($file['error'] ?? UPLOAD_ERR_OK) !== UPLOAD_ERR_OK) {
+    $imageErrors[] = 'Error al subir la imagen de variante.';
+    return null;
+  }
+  $size = (int)($file['size'] ?? 0);
+  if ($size <= 0 || $size > $maxImageSize) {
+    $imageErrors[] = 'La imagen de variante supera el tamaño permitido.';
+    return null;
+  }
+  $tmpPath = $file['tmp_name'] ?? '';
+  $info = $tmpPath ? getimagesize($tmpPath) : false;
+  if ($info === false) {
+    $imageErrors[] = 'El archivo de variante no es una imagen válida.';
+    return null;
+  }
+  $imageType = $info[2];
+  if (!in_array($imageType, [IMAGETYPE_JPEG, IMAGETYPE_PNG], true)) {
+    $imageErrors[] = 'Formato no soportado para la imagen de variante.';
+    return null;
+  }
+  if (!function_exists('imagecreatefromjpeg')) {
+    $imageErrors[] = 'GD no está disponible para procesar imágenes.';
+    return null;
+  }
+  $ext = $imageType === IMAGETYPE_PNG ? 'png' : 'jpg';
+  $baseName = bin2hex(random_bytes(16)).'.'.$ext;
+  $uploadDir = __DIR__.'/../uploads/store_variant_images/'.$variantId;
+  if (!is_dir($uploadDir)) {
+    mkdir($uploadDir, 0775, true);
+  }
+  if ($imageType === IMAGETYPE_PNG) {
+    $source = imagecreatefrompng($tmpPath);
+  } else {
+    $source = imagecreatefromjpeg($tmpPath);
+  }
+  if (!$source) {
+    $imageErrors[] = 'No se pudo procesar la imagen de variante.';
+    return null;
+  }
+  $width = imagesx($source);
+  $height = imagesy($source);
+  $side = min($width, $height);
+  $srcX = (int)(($width - $side) / 2);
+  $srcY = (int)(($height - $side) / 2);
+  $square = imagecreatetruecolor($side, $side);
+  if ($imageType === IMAGETYPE_PNG) {
+    prepare_png_canvas($square, $side, $side);
+  }
+  imagecopyresampled($square, $source, 0, 0, $srcX, $srcY, $side, $side, $side, $side);
+  imagedestroy($source);
+  $dest = $uploadDir.'/'.$baseName;
+  if (!save_resized_square($square, $targetSize, $dest, $imageType)) {
+    $imageErrors[] = 'No se pudo guardar la imagen de variante.';
+    imagedestroy($square);
+    return null;
+  }
+  imagedestroy($square);
+  return variant_image_relative_path($variantId, $baseName);
+}
+
 $productStSql = "SELECT sp.*, s.name AS store_name, s.store_type, s.markup_percent, s.id AS store_id
   FROM store_products sp
   JOIN stores s ON s.id=sp.store_id
@@ -70,9 +157,10 @@ if (!empty($_GET['created']) && empty($msg)) {
 }
 
 $variantHandled = false;
-if ($role === 'superadmin' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+$canManageVariants = in_array($role, ['superadmin', 'seller'], true);
+if ($canManageVariants && $_SERVER['REQUEST_METHOD'] === 'POST') {
   $variantAction = $_POST['action'] ?? '';
-  if (in_array($variantAction, ['add_variant', 'update_variant', 'delete_variant', 'move_variant'], true)) {
+  if (in_array($variantAction, ['add_variant', 'delete_variant'], true)) {
     $variantHandled = true;
     $product_id = (int)($_POST['product_id'] ?? 0);
     if ($product_id !== $productId) {
@@ -80,26 +168,71 @@ if ($role === 'superadmin' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     if (empty($err)) {
       if ($variantAction === 'add_variant') {
-        $colorId = (int)($_POST['color_id'] ?? 0);
-        $stockQty = (int)($_POST['stock_qty'] ?? 0);
+        $colorInput = (int)($_POST['color_id'] ?? 0);
+        $sizeInput = (int)($_POST['size_id'] ?? 0);
+        $colorId = $colorInput > 0 ? $colorInput : null;
+        $sizeId = $sizeInput > 0 ? $sizeInput : null;
         $skuVariant = trim((string)($_POST['sku_variant'] ?? ''));
-        $imageCover = trim((string)($_POST['image_cover'] ?? ''));
-        $imageValue = $imageCover === '' ? null : $imageCover;
-        if ($colorId <= 0) {
-          $err = "Color inválido.";
-        } else {
-          $colorSt = $pdo->prepare("SELECT id FROM colors WHERE id=? LIMIT 1");
-          $colorSt->execute([$colorId]);
-          if (!$colorSt->fetch()) {
-            $err = "Color inválido.";
+        $imageValue = null;
+        $variantCount = 0;
+        $productSku = trim((string)($product['sku'] ?? ''));
+        if ($colorId === null && $sizeId === null) {
+          $err = "Elegí un color y/o un talle.";
+        }
+
+        if (empty($err)) {
+          $colorRow = null;
+          $sizeRow = null;
+          if ($colorId !== null) {
+            $colorSt = $role === 'superadmin'
+              ? $pdo->prepare("SELECT id, codigo FROM colors WHERE id=? LIMIT 1")
+              : $pdo->prepare("SELECT id, codigo FROM colors WHERE id=? AND active=1 LIMIT 1");
+            $colorSt->execute([$colorId]);
+            $colorRow = $colorSt->fetch();
+            if (!$colorRow) {
+              $err = "Color inválido.";
+            }
+          }
+          if (empty($err) && $sizeId !== null) {
+            $sizeSt = $role === 'superadmin'
+              ? $pdo->prepare("SELECT id, code FROM sizes WHERE id=? LIMIT 1")
+              : $pdo->prepare("SELECT id, code FROM sizes WHERE id=? AND active=1 LIMIT 1");
+            $sizeSt->execute([$sizeId]);
+            $sizeRow = $sizeSt->fetch();
+            if (!$sizeRow) {
+              $err = "Talle inválido.";
+            }
+          }
+          if (empty($err) && $skuVariant === '' && $productSku !== '') {
+            $pieces = [];
+            if ($colorRow) {
+              $colorCode = trim((string)($colorRow['codigo'] ?? ''));
+              $pieces[] = $colorCode !== '' ? $colorCode : 'C'.$colorId;
+            }
+            if ($sizeRow) {
+              $sizeCode = trim((string)($sizeRow['code'] ?? ''));
+              $pieces[] = $sizeCode !== '' ? $sizeCode : 'T'.$sizeId;
+            }
+            if ($pieces) {
+              $skuVariant = $productSku.'-'.implode('-', $pieces);
+            }
           }
         }
 
         if (empty($err)) {
-          $dupSt = $pdo->prepare("SELECT id FROM product_variants WHERE owner_type='vendor' AND owner_id=? AND product_id=? AND color_id=? LIMIT 1");
-          $dupSt->execute([$storeId, $productId, $colorId]);
+          if ($skuVariant === '') {
+            $err = "SKU de variante obligatorio.";
+          }
+        }
+
+        if (empty($err)) {
+          $countSt = $pdo->prepare("SELECT COUNT(*) FROM product_variants WHERE owner_type='vendor' AND owner_id=? AND product_id=?");
+          $countSt->execute([$storeId, $productId]);
+          $variantCount = (int)$countSt->fetchColumn();
+          $dupSt = $pdo->prepare("SELECT id FROM product_variants WHERE owner_type='vendor' AND owner_id=? AND product_id=? AND color_id <=> ? AND size_id <=> ? LIMIT 1");
+          $dupSt->execute([$storeId, $productId, $colorId, $sizeId]);
           if ($dupSt->fetch()) {
-            $err = "El color ya está agregado.";
+            $err = "Ya existe una variante para esa combinación.";
           }
         }
 
@@ -108,82 +241,42 @@ if ($role === 'superadmin' && $_SERVER['REQUEST_METHOD'] === 'POST') {
           $posSt->execute([$storeId, $productId]);
           $nextPos = (int)$posSt->fetchColumn() + 1;
           $insertSt = $pdo->prepare("
-            INSERT INTO product_variants(owner_type, owner_id, product_id, color_id, sku_variant, stock_qty, image_cover, position)
-            VALUES('vendor', ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO product_variants(owner_type, owner_id, product_id, color_id, size_id, sku_variant, stock_qty, image_cover, position)
+            VALUES('vendor', ?, ?, ?, ?, ?, ?, ?, ?)
           ");
-          $insertSt->execute([$storeId, $productId, $colorId, $skuVariant ?: null, $stockQty, $imageValue, $nextPos]);
-          $msg = "Variante agregada.";
-        }
-      } elseif ($variantAction === 'update_variant') {
-        $variantId = (int)($_POST['variant_id'] ?? 0);
-        $stockQty = (int)($_POST['stock_qty'] ?? 0);
-        $skuVariant = trim((string)($_POST['sku_variant'] ?? ''));
-        $imageCover = trim((string)($_POST['image_cover'] ?? ''));
-        $imageValue = $imageCover === '' ? null : $imageCover;
-        if ($variantId <= 0) {
-          $err = "Variante inválida.";
-        } else {
-          $updateSt = $pdo->prepare("
-            UPDATE product_variants
-            SET sku_variant=?, stock_qty=?, image_cover=?
-            WHERE id=? AND owner_type='vendor' AND owner_id=? AND product_id=?
-          ");
-          $updateSt->execute([$skuVariant ?: null, $stockQty, $imageValue, $variantId, $storeId, $productId]);
-          if ($updateSt->rowCount() === 0) {
-            $err = "Variante inválida.";
-          } else {
-            $msg = "Variante actualizada.";
+          $insertSt->execute([$storeId, $productId, $colorId, $sizeId, $skuVariant, 0, $imageValue, $nextPos]);
+          $variantId = (int)$pdo->lastInsertId();
+          $uploadedPath = null;
+          if (!empty($_FILES['variant_image'])) {
+            $uploadedPath = variant_image_process_upload($_FILES['variant_image'], $variantId, $max_image_size_bytes, $variant_image_size, $image_errors);
           }
+          if ($uploadedPath !== null) {
+            $pdo->prepare("UPDATE product_variants SET image_cover=? WHERE id=? AND owner_type='vendor' AND owner_id=? AND product_id=?")
+                ->execute([$uploadedPath, $variantId, $storeId, $productId]);
+          }
+          if ($variantCount === 0) {
+            $pdo->prepare("UPDATE store_products SET own_stock_qty=0 WHERE id=? AND store_id=?")
+                ->execute([$productId, $storeId]);
+          }
+          $msg = "Variante agregada.";
         }
       } elseif ($variantAction === 'delete_variant') {
         $variantId = (int)($_POST['variant_id'] ?? 0);
         if ($variantId <= 0) {
           $err = "Variante inválida.";
         } else {
+          $imageSt = $pdo->prepare("SELECT image_cover FROM product_variants WHERE id=? AND owner_type='vendor' AND owner_id=? AND product_id=?");
+          $imageSt->execute([$variantId, $storeId, $productId]);
+          $imageCover = $imageSt->fetchColumn();
           $delSt = $pdo->prepare("DELETE FROM product_variants WHERE id=? AND owner_type='vendor' AND owner_id=? AND product_id=?");
           $delSt->execute([$variantId, $storeId, $productId]);
           if ($delSt->rowCount() === 0) {
             $err = "Variante inválida.";
           } else {
+            if ($imageCover) {
+              variant_image_delete_existing((string)$imageCover);
+            }
             $msg = "Variante eliminada.";
-          }
-        }
-      } elseif ($variantAction === 'move_variant') {
-        $variantId = (int)($_POST['variant_id'] ?? 0);
-        $direction = $_POST['direction'] ?? '';
-        if ($variantId <= 0 || !in_array($direction, ['up', 'down'], true)) {
-          $err = "Movimiento inválido.";
-        } else {
-          $orderSt = $pdo->prepare("
-            SELECT id, position
-            FROM product_variants
-            WHERE owner_type='vendor' AND owner_id=? AND product_id=?
-            ORDER BY position ASC, id ASC
-          ");
-          $orderSt->execute([$storeId, $productId]);
-          $variants = $orderSt->fetchAll();
-          $index = null;
-          foreach ($variants as $i => $variant) {
-            if ((int)$variant['id'] === $variantId) {
-              $index = $i;
-              break;
-            }
-          }
-          if ($index === null) {
-            $err = "Variante inválida.";
-          } else {
-            $swapIndex = $direction === 'up' ? $index - 1 : $index + 1;
-            if (!isset($variants[$swapIndex])) {
-              $err = "No se puede mover.";
-            } else {
-              $current = $variants[$index];
-              $swap = $variants[$swapIndex];
-              $pdo->prepare("UPDATE product_variants SET position=? WHERE id=?")
-                  ->execute([(int)$swap['position'], (int)$current['id']]);
-              $pdo->prepare("UPDATE product_variants SET position=? WHERE id=?")
-                  ->execute([(int)$current['position'], (int)$swap['id']]);
-              $msg = "Orden actualizado.";
-            }
           }
         }
       }
@@ -278,18 +371,22 @@ $product = $productSt->fetch();
 $product_images = product_images_fetch($pdo, 'store_product', $productId);
 $variantRows = [];
 $variantSt = $pdo->prepare("
-  SELECT pv.id, pv.color_id, pv.sku_variant, pv.stock_qty, pv.image_cover, pv.position, c.name AS color_name
+  SELECT pv.id, pv.color_id, pv.size_id, pv.sku_variant, pv.stock_qty, pv.image_cover, pv.position,
+         c.name AS color_name, s.name AS size_name
   FROM product_variants pv
-  JOIN colors c ON c.id = pv.color_id
+  LEFT JOIN colors c ON c.id = pv.color_id
+  LEFT JOIN sizes s ON s.id = pv.size_id
   WHERE pv.owner_type='vendor' AND pv.owner_id=? AND pv.product_id=?
   ORDER BY pv.position ASC, pv.id ASC
 ");
 $variantSt->execute([$storeId, $productId]);
 $variantRows = $variantSt->fetchAll();
 if ($role === 'superadmin') {
-  $colors = $pdo->query("SELECT id, name, active FROM colors ORDER BY name ASC, id ASC")->fetchAll();
+  $colors = $pdo->query("SELECT id, name, codigo, active FROM colors ORDER BY name ASC, id ASC")->fetchAll();
+  $sizes = $pdo->query("SELECT id, name, code, active FROM sizes ORDER BY position ASC, name ASC, id ASC")->fetchAll();
 } else {
-  $colors = [];
+  $colors = $pdo->query("SELECT id, name, codigo FROM colors WHERE active=1 ORDER BY name ASC, id ASC")->fetchAll();
+  $sizes = $pdo->query("SELECT id, name, code FROM sizes WHERE active=1 ORDER BY position ASC, name ASC, id ASC")->fetchAll();
 }
 
 $provStock = provider_stock_sum($pdo, (int)$product['id']);
@@ -370,51 +467,27 @@ echo "</select>
 <button>Guardar cambios</button>
 </form><hr>";
 
-echo "<h3>Variantes (Color)</h3>";
+echo "<fieldset>
+<legend>Variantes (Color y/o Talle)</legend>";
 if (!$variantRows) {
-  echo "<p>Sin variantes.</p>";
+  echo "<p>Sin variantes.</p>
+  <p><button type='button' id='variant-toggle'>Crear variante</button></p>
+  <p>Si crea una variante el stock principal desaparecerá.</p>";
 } else {
   echo "<table border='1' cellpadding='6' cellspacing='0'>
-  <tr><th>Color</th><th>SKU</th><th>Stock</th>";
-  if ($role === 'superadmin') {
-    echo "<th>Imagen</th><th>Orden</th><th>Acciones</th>";
-  }
-  echo "</tr>";
+  <tr><th>Color</th><th>Talle</th><th>SKU</th><th>Imagen</th><th>Acciones</th></tr>";
   foreach ($variantRows as $variant) {
     $skuVariant = $variant['sku_variant'] !== null && $variant['sku_variant'] !== '' ? $variant['sku_variant'] : '—';
-    $imageCover = $variant['image_cover'] !== null && $variant['image_cover'] !== '' ? $variant['image_cover'] : '—';
+    $colorName = $variant['color_name'] !== null && $variant['color_name'] !== '' ? $variant['color_name'] : '—';
+    $sizeName = $variant['size_name'] !== null && $variant['size_name'] !== '' ? $variant['size_name'] : '—';
+    $imageCover = (string)($variant['image_cover'] ?? '');
+    $imagePreview = $imageCover !== '' ? "<img src='".h($imageCover)."' alt='' width='50' height='50'> " : '—';
     echo "<tr>
-      <td>".h((string)$variant['color_name'])."</td>";
-    if ($role === 'superadmin') {
-      $formId = "variant-update-".(int)$variant['id'];
-      echo "<td><input name='sku_variant' value='".h((string)($variant['sku_variant'] ?? ''))."' style='width:140px' form='".h($formId)."'></td>
-      <td><input name='stock_qty' value='".h((string)$variant['stock_qty'])."' style='width:80px' form='".h($formId)."'></td>
-      <td><input name='image_cover' value='".h((string)($variant['image_cover'] ?? ''))."' style='width:180px' form='".h($formId)."'></td>
-      <td>".h((string)$variant['position'])."</td>
+      <td>".h((string)$colorName)."</td>
+      <td>".h((string)$sizeName)."</td>
+      <td>".h((string)$skuVariant)."</td>
+      <td>".$imagePreview."</td>
       <td>
-        <form method='post' id='".h($formId)."' style='margin:0; display:inline;'>
-          <input type='hidden' name='csrf' value='".h(csrf_token())."'>
-          <input type='hidden' name='action' value='update_variant'>
-          <input type='hidden' name='product_id' value='".h((string)$productId)."'>
-          <input type='hidden' name='variant_id' value='".h((string)$variant['id'])."'>
-          <button>Guardar</button>
-        </form>
-        <form method='post' style='margin:0; display:inline;'>
-          <input type='hidden' name='csrf' value='".h(csrf_token())."'>
-          <input type='hidden' name='action' value='move_variant'>
-          <input type='hidden' name='product_id' value='".h((string)$productId)."'>
-          <input type='hidden' name='variant_id' value='".h((string)$variant['id'])."'>
-          <input type='hidden' name='direction' value='up'>
-          <button>↑</button>
-        </form>
-        <form method='post' style='margin:0; display:inline;'>
-          <input type='hidden' name='csrf' value='".h(csrf_token())."'>
-          <input type='hidden' name='action' value='move_variant'>
-          <input type='hidden' name='product_id' value='".h((string)$productId)."'>
-          <input type='hidden' name='variant_id' value='".h((string)$variant['id'])."'>
-          <input type='hidden' name='direction' value='down'>
-          <button>↓</button>
-        </form>
         <form method='post' style='margin:0; display:inline;' onsubmit='return confirm(\"¿Eliminar variante?\")'>
           <input type='hidden' name='csrf' value='".h(csrf_token())."'>
           <input type='hidden' name='action' value='delete_variant'>
@@ -422,39 +495,109 @@ if (!$variantRows) {
           <input type='hidden' name='variant_id' value='".h((string)$variant['id'])."'>
           <button>Eliminar</button>
         </form>
-      </td>";
-    } else {
-      echo "<td>".h((string)$skuVariant)."</td>
-      <td>".h((string)$variant['stock_qty'])."</td>";
-    }
-    echo "</tr>";
+      </td>
+    </tr>";
   }
   echo "</table>";
 }
-if ($role === 'superadmin') {
+if ($canManageVariants) {
+  $variantFormStyle = $variantRows ? '' : " style='display:none;'";
   echo "<h4>Agregar variante</h4>
-  <form method='post'>
+  <form method='post' enctype='multipart/form-data' id='variant-form'".$variantFormStyle.">
     <input type='hidden' name='csrf' value='".h(csrf_token())."'>
     <input type='hidden' name='action' value='add_variant'>
     <input type='hidden' name='product_id' value='".h((string)$productId)."'>
     <p>Color:
-      <select name='color_id'>
-        <option value='0'>-- elegir --</option>";
+      <select name='color_id' id='variant-color-select'>
+        <option value='0'>-- ninguno --</option>";
   foreach ($colors as $color) {
     $colorLabel = $color['name'];
-    if ((int)$color['active'] !== 1) {
+    if ($role === 'superadmin' && (int)($color['active'] ?? 1) !== 1) {
       $colorLabel .= " (inactivo)";
     }
-    echo "<option value='".h((string)$color['id'])."'>".h($colorLabel)."</option>";
+    $colorCode = trim((string)($color['codigo'] ?? ''));
+    $colorCodeAttr = $colorCode !== '' ? " data-code='".h($colorCode)."'" : "";
+    echo "<option value='".h((string)$color['id'])."'".$colorCodeAttr.">".h($colorLabel)."</option>";
   }
   echo "</select></p>
-    <p>Stock: <input name='stock_qty' style='width:80px'></p>
-    <p>SKU: <input name='sku_variant' style='width:180px'></p>
-    <p>Imagen: <input name='image_cover' style='width:220px'></p>
+    <p>Talle:
+      <select name='size_id' id='variant-size-select'>
+        <option value='0'>-- ninguno --</option>";
+  foreach ($sizes as $size) {
+    $sizeLabel = $size['name'];
+    if ($role === 'superadmin' && (int)($size['active'] ?? 1) !== 1) {
+      $sizeLabel .= " (inactivo)";
+    }
+    $sizeCode = trim((string)($size['code'] ?? ''));
+    $sizeCodeAttr = $sizeCode !== '' ? " data-code='".h($sizeCode)."'" : "";
+    echo "<option value='".h((string)$size['id'])."'".$sizeCodeAttr.">".h($sizeLabel)."</option>";
+  }
+  echo "</select></p>
+    <p>SKU: <input name='sku_variant' id='variant-sku-input' style='width:200px' required></p>
+    <p>Imagen: <input type='file' name='variant_image' accept='image/*'></p>
     <button>Agregar</button>
   </form>";
 }
-echo "<hr>";
+echo "<script>
+(function() {
+  var toggle = document.getElementById('variant-toggle');
+  var form = document.getElementById('variant-form');
+  if (!toggle || !form) return;
+  toggle.addEventListener('click', function() {
+    form.style.display = '';
+    toggle.style.display = 'none';
+  });
+})();
+(function() {
+  var form = document.getElementById('variant-form');
+  if (!form) return;
+  var colorSelect = form.querySelector('select[name=\"color_id\"]');
+  var sizeSelect = form.querySelector('select[name=\"size_id\"]');
+  var skuInput = form.querySelector('input[name=\"sku_variant\"]');
+  var productSkuInput = document.querySelector('input[name=\"sku\"]');
+  if (!colorSelect || !sizeSelect || !skuInput || !productSkuInput) return;
+
+  function updateVariantSku() {
+    var baseSku = productSkuInput.value.trim();
+    var selectedOption = colorSelect.options[colorSelect.selectedIndex];
+    var sizeOption = sizeSelect.options[sizeSelect.selectedIndex];
+    if (!selectedOption || !sizeOption) {
+      skuInput.value = '';
+      return;
+    }
+    var colorValue = colorSelect.value;
+    var sizeValue = sizeSelect.value;
+    if (colorValue === '0' && sizeValue === '0') {
+      skuInput.value = '';
+      return;
+    }
+    if (baseSku === '') {
+      skuInput.value = '';
+      return;
+    }
+    var pieces = [];
+    if (colorValue !== '0') {
+      var colorCode = (selectedOption.getAttribute('data-code') || '').trim();
+      pieces.push(colorCode !== '' ? colorCode : 'C' + colorValue);
+    }
+    if (sizeValue !== '0') {
+      var sizeCode = (sizeOption.getAttribute('data-code') || '').trim();
+      pieces.push(sizeCode !== '' ? sizeCode : 'T' + sizeValue);
+    }
+    if (!pieces.length) {
+      skuInput.value = '';
+      return;
+    }
+    skuInput.value = baseSku + '-' + pieces.join('-');
+  }
+
+  colorSelect.addEventListener('change', updateVariantSku);
+  sizeSelect.addEventListener('change', updateVariantSku);
+  productSkuInput.addEventListener('input', updateVariantSku);
+})();
+</script>
+</fieldset>
+<hr>";
 
 echo "<h3>Imágenes</h3>
 <form method='post' enctype='multipart/form-data'>
