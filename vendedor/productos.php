@@ -48,10 +48,261 @@ foreach ($flatCategories as $cat) {
   $categoryIdSet[(int)$cat['id']] = true;
 }
 
+$variant_image_size = 600;
+
+function variant_draft_relative_path(string $token, string $filename): string {
+  return "/uploads/store_variant_drafts/".$token."/".$filename;
+}
+
+function variant_draft_disk_path(string $relativePath): string {
+  return __DIR__.'/../'.ltrim($relativePath, '/');
+}
+
+function variant_draft_delete_image(?string $relativePath): void {
+  if (!$relativePath) {
+    return;
+  }
+  if (strpos($relativePath, '/uploads/store_variant_drafts/') !== 0) {
+    return;
+  }
+  $diskPath = variant_draft_disk_path($relativePath);
+  if (is_file($diskPath) && !unlink($diskPath)) {
+    error_log("No se pudo borrar la imagen temporal {$diskPath}");
+  }
+}
+
+function variant_draft_process_upload(array $file, string $token, int $maxImageSize, int $targetSize, array &$imageErrors): ?string {
+  if (($file['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
+    return null;
+  }
+  if (($file['error'] ?? UPLOAD_ERR_OK) !== UPLOAD_ERR_OK) {
+    $imageErrors[] = 'Error al subir la imagen de variante.';
+    return null;
+  }
+  $size = (int)($file['size'] ?? 0);
+  if ($size <= 0 || $size > $maxImageSize) {
+    $imageErrors[] = 'La imagen de variante supera el tamaño permitido.';
+    return null;
+  }
+  $tmpPath = $file['tmp_name'] ?? '';
+  $info = $tmpPath ? getimagesize($tmpPath) : false;
+  if ($info === false) {
+    $imageErrors[] = 'El archivo de variante no es una imagen válida.';
+    return null;
+  }
+  $imageType = $info[2];
+  if (!in_array($imageType, [IMAGETYPE_JPEG, IMAGETYPE_PNG], true)) {
+    $imageErrors[] = 'Formato no soportado para la imagen de variante.';
+    return null;
+  }
+  if (!function_exists('imagecreatefromjpeg')) {
+    $imageErrors[] = 'GD no está disponible para procesar imágenes.';
+    return null;
+  }
+  $ext = $imageType === IMAGETYPE_PNG ? 'png' : 'jpg';
+  $baseName = bin2hex(random_bytes(16)).'.'.$ext;
+  $uploadDir = __DIR__.'/../uploads/store_variant_drafts/'.$token;
+  if (!is_dir($uploadDir)) {
+    mkdir($uploadDir, 0775, true);
+  }
+  if ($imageType === IMAGETYPE_PNG) {
+    $source = imagecreatefrompng($tmpPath);
+  } else {
+    $source = imagecreatefromjpeg($tmpPath);
+  }
+  if (!$source) {
+    $imageErrors[] = 'No se pudo procesar la imagen de variante.';
+    return null;
+  }
+  $width = imagesx($source);
+  $height = imagesy($source);
+  $side = min($width, $height);
+  $srcX = (int)(($width - $side) / 2);
+  $srcY = (int)(($height - $side) / 2);
+  $square = imagecreatetruecolor($side, $side);
+  if ($imageType === IMAGETYPE_PNG) {
+    prepare_png_canvas($square, $side, $side);
+  }
+  imagecopyresampled($square, $source, 0, 0, $srcX, $srcY, $side, $side, $side, $side);
+  imagedestroy($source);
+  $dest = $uploadDir.'/'.$baseName;
+  if (!save_resized_square($square, $targetSize, $dest, $imageType)) {
+    $imageErrors[] = 'No se pudo guardar la imagen de variante.';
+    imagedestroy($square);
+    return null;
+  }
+  imagedestroy($square);
+  return variant_draft_relative_path($token, $baseName);
+}
+
+function variant_final_relative_path(int $variantId, string $filename): string {
+  return "/uploads/store_variant_images/".$variantId."/".$filename;
+}
+
+function variant_draft_move_to_final(?string $relativePath, string $token, int $variantId, array &$imageErrors): ?string {
+  if (!$relativePath) {
+    return null;
+  }
+  $prefix = '/uploads/store_variant_drafts/'.$token.'/';
+  if (strpos($relativePath, $prefix) !== 0) {
+    return null;
+  }
+  $sourcePath = variant_draft_disk_path($relativePath);
+  if (!is_file($sourcePath)) {
+    $imageErrors[] = 'No se encontró la imagen de variante.';
+    return null;
+  }
+  $filename = basename($relativePath);
+  $targetDir = __DIR__.'/../uploads/store_variant_images/'.$variantId;
+  if (!is_dir($targetDir)) {
+    mkdir($targetDir, 0775, true);
+  }
+  $targetPath = $targetDir.'/'.$filename;
+  if (!rename($sourcePath, $targetPath)) {
+    $imageErrors[] = 'No se pudo mover la imagen de variante.';
+    return null;
+  }
+  return variant_final_relative_path($variantId, $filename);
+}
+
+function variant_draft_cleanup(string $token): void {
+  $dir = __DIR__.'/../uploads/store_variant_drafts/'.$token;
+  if (!is_dir($dir)) {
+    return;
+  }
+  $files = glob($dir.'/*');
+  if ($files) {
+    foreach ($files as $file) {
+      if (is_file($file)) {
+        unlink($file);
+      }
+    }
+  }
+  @rmdir($dir);
+}
+
 $action = $_GET['action'] ?? 'list';
 if (!in_array($action, ['list', 'new'], true)) $action = 'list';
 $listUrl = "productos.php?action=list&store_id=".h((string)$storeId);
 $newUrl = "productos.php?action=new&store_id=".h((string)$storeId);
+
+$colors = [];
+$sizes = [];
+$variantDrafts = [];
+$variantDraftToken = '';
+$variantDraftState = null;
+if ($action === 'new' || ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array(($_POST['action'] ?? ''), ['add_variant_draft', 'delete_variant_draft', 'create'], true))) {
+  $colors = $pdo->query("SELECT id, name, codigo FROM colors WHERE active=1 ORDER BY name ASC, id ASC")->fetchAll();
+  $sizes = $pdo->query("SELECT id, name, code FROM sizes WHERE active=1 ORDER BY position ASC, name ASC, id ASC")->fetchAll();
+  $variantDraftState = $_SESSION['store_variant_drafts'][$storeId] ?? [];
+  $variantDraftToken = (string)($variantDraftState['token'] ?? '');
+  if ($variantDraftToken === '') {
+    $variantDraftToken = bin2hex(random_bytes(8));
+    $variantDraftState = ['token' => $variantDraftToken, 'variants' => []];
+    $_SESSION['store_variant_drafts'][$storeId] = $variantDraftState;
+  }
+  $variantDrafts = $variantDraftState['variants'] ?? [];
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array(($_POST['action'] ?? ''), ['add_variant_draft', 'delete_variant_draft'], true)) {
+  $action = 'new';
+  $variantAction = $_POST['action'] ?? '';
+  $colorsById = [];
+  foreach ($colors as $color) {
+    $colorsById[(int)$color['id']] = $color;
+  }
+  $sizesById = [];
+  foreach ($sizes as $size) {
+    $sizesById[(int)$size['id']] = $size;
+  }
+
+  if ($variantAction === 'add_variant_draft') {
+    $colorInput = (int)($_POST['color_id'] ?? 0);
+    $sizeInput = (int)($_POST['size_id'] ?? 0);
+    $colorId = $colorInput > 0 ? $colorInput : null;
+    $sizeId = $sizeInput > 0 ? $sizeInput : null;
+    $skuVariant = trim((string)($_POST['sku_variant'] ?? ''));
+    $productSku = trim((string)($_POST['product_sku'] ?? ''));
+    if ($colorId === null && $sizeId === null) {
+      $err = "Elegí un color y/o un talle.";
+    }
+    if (empty($err) && $colorId !== null && empty($colorsById[$colorId])) {
+      $err = "Color inválido.";
+    }
+    if (empty($err) && $sizeId !== null && empty($sizesById[$sizeId])) {
+      $err = "Talle inválido.";
+    }
+    if (empty($err) && $skuVariant === '' && $productSku !== '') {
+      $pieces = [];
+      if ($colorId !== null) {
+        $colorCode = trim((string)($colorsById[$colorId]['codigo'] ?? ''));
+        $pieces[] = $colorCode !== '' ? $colorCode : 'C'.$colorId;
+      }
+      if ($sizeId !== null) {
+        $sizeCode = trim((string)($sizesById[$sizeId]['code'] ?? ''));
+        $pieces[] = $sizeCode !== '' ? $sizeCode : 'T'.$sizeId;
+      }
+      if ($pieces) {
+        $skuVariant = $productSku.'-'.implode('-', $pieces);
+      }
+    }
+    if (empty($err) && $skuVariant === '') {
+      $err = "SKU de variante obligatorio.";
+    }
+    if (empty($err)) {
+      foreach ($variantDrafts as $draft) {
+        $draftColor = $draft['color_id'] ?? null;
+        $draftSize = $draft['size_id'] ?? null;
+        if ($draftColor === $colorId && $draftSize === $sizeId) {
+          $err = "Ya existe una variante para esa combinación.";
+          break;
+        }
+      }
+    }
+    if (empty($err)) {
+      $imagePath = null;
+      if (!empty($_FILES['variant_image'])) {
+        $imagePath = variant_draft_process_upload($_FILES['variant_image'], $variantDraftToken, $max_image_size_bytes, $variant_image_size, $image_errors);
+      }
+      $variantDrafts[] = [
+        'id' => bin2hex(random_bytes(8)),
+        'color_id' => $colorId,
+        'size_id' => $sizeId,
+        'sku_variant' => $skuVariant,
+        'image_path' => $imagePath,
+      ];
+      $_SESSION['store_variant_drafts'][$storeId]['variants'] = $variantDrafts;
+      $msg = "Variante agregada.";
+    }
+  }
+
+  if ($variantAction === 'delete_variant_draft') {
+    $draftId = (string)($_POST['draft_id'] ?? '');
+    if ($draftId === '') {
+      $err = "Variante inválida.";
+    } else {
+      $found = false;
+      $nextDrafts = [];
+      foreach ($variantDrafts as $draft) {
+        if (($draft['id'] ?? '') === $draftId) {
+          $found = true;
+          if (!empty($draft['image_path'])) {
+            variant_draft_delete_image((string)$draft['image_path']);
+          }
+          continue;
+        }
+        $nextDrafts[] = $draft;
+      }
+      if (!$found) {
+        $err = "Variante inválida.";
+      } else {
+        $variantDrafts = $nextDrafts;
+        $_SESSION['store_variant_drafts'][$storeId]['variants'] = $variantDrafts;
+        $msg = "Variante eliminada.";
+      }
+    }
+  }
+}
 
 if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '') === 'create') {
   $title = trim((string)($_POST['title'] ?? ''));
@@ -107,32 +358,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '') === 'create'
     }
 
     if ($copy_source_id > 0 && $copy_provider_id > 0) {
-      $variantSt = $pdo->prepare("
-        SELECT color_id, size_id, sku_variant, stock_qty, image_cover, position
-        FROM product_variants
-        WHERE owner_type='provider' AND owner_id=? AND product_id=?
-        ORDER BY position ASC, id ASC
-      ");
-      $variantSt->execute([$copy_provider_id, $copy_source_id]);
-      $variants = $variantSt->fetchAll();
-      if ($variants) {
-        $insertVariant = $pdo->prepare("
-          INSERT INTO product_variants(owner_type, owner_id, product_id, color_id, size_id, sku_variant, stock_qty, image_cover, position)
-          VALUES('vendor', ?, ?, ?, ?, ?, ?, ?, ?)
-        ");
-        foreach ($variants as $variant) {
-          $insertVariant->execute([
-            $storeId,
-            $productId,
-            (int)$variant['color_id'],
-            $variant['size_id'] !== null ? (int)$variant['size_id'] : null,
-            $variant['sku_variant'],
-            (int)$variant['stock_qty'],
-            $variant['image_cover'],
-            (int)$variant['position'],
-          ]);
-        }
-      }
+      // Variantes desde proveedor se omiten en esta etapa.
     }
 
     foreach ($order_tokens as $token) {
@@ -189,6 +415,43 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '') === 'create'
     }
     if ($remaining_upload_indices) {
       product_images_process_uploads($pdo, 'store_product', $productId, $upload_files, $upload_dir, $image_sizes, $max_image_size_bytes, $image_errors, $remaining_upload_indices, $next_position, false);
+    }
+
+    if ($variantDrafts) {
+      $insertVariant = $pdo->prepare("
+        INSERT INTO product_variants(owner_type, owner_id, product_id, color_id, size_id, sku_variant, stock_qty, image_cover, position)
+        VALUES('vendor', ?, ?, ?, ?, ?, ?, ?, ?)
+      ");
+      $position = 0;
+      foreach ($variantDrafts as $draft) {
+        $position++;
+        $colorId = isset($draft['color_id']) && $draft['color_id'] !== null ? (int)$draft['color_id'] : null;
+        $sizeId = isset($draft['size_id']) && $draft['size_id'] !== null ? (int)$draft['size_id'] : null;
+        $skuVariant = trim((string)($draft['sku_variant'] ?? ''));
+        $insertVariant->execute([
+          $storeId,
+          $productId,
+          $colorId,
+          $sizeId,
+          $skuVariant ?: null,
+          0,
+          null,
+          $position,
+        ]);
+        $variantId = (int)$pdo->lastInsertId();
+        $imagePath = (string)($draft['image_path'] ?? '');
+        if ($imagePath !== '') {
+          $finalPath = variant_draft_move_to_final($imagePath, $variantDraftToken, $variantId, $image_errors);
+          if ($finalPath !== null) {
+            $pdo->prepare("UPDATE product_variants SET image_cover=? WHERE id=? AND owner_type='vendor' AND owner_id=? AND product_id=?")
+                ->execute([$finalPath, $variantId, $storeId, $productId]);
+          }
+        }
+      }
+      unset($_SESSION['store_variant_drafts'][$storeId]);
+      if ($variantDraftToken !== '') {
+        variant_draft_cleanup($variantDraftToken);
+      }
     }
 
     $msg="Producto creado.";
@@ -342,6 +605,155 @@ echo "</select>
   <p id='copy-message' style='color:green; display:none;'></p>
   <button>Crear</button>
   </form><hr>";
+
+  $colorsById = [];
+  foreach ($colors as $color) {
+    $colorsById[(int)$color['id']] = $color;
+  }
+  $sizesById = [];
+  foreach ($sizes as $size) {
+    $sizesById[(int)$size['id']] = $size;
+  }
+
+  echo "<fieldset>
+  <legend>Variantes (Color y/o Talle)</legend>";
+  if (!$variantDrafts) {
+    echo "<p>Sin variantes.</p>
+    <p><button type='button' id='variant-toggle'>Crear variante</button></p>
+    <p>Si crea una variante el stock principal desaparecerá.</p>";
+  } else {
+    echo "<table border='1' cellpadding='6' cellspacing='0'>
+    <tr><th>Color</th><th>Talle</th><th>SKU</th><th>Imagen</th><th>Acciones</th></tr>";
+    foreach ($variantDrafts as $draft) {
+      $colorName = '—';
+      $sizeName = '—';
+      if (!empty($draft['color_id']) && isset($colorsById[(int)$draft['color_id']])) {
+        $colorName = (string)$colorsById[(int)$draft['color_id']]['name'];
+      }
+      if (!empty($draft['size_id']) && isset($sizesById[(int)$draft['size_id']])) {
+        $sizeName = (string)$sizesById[(int)$draft['size_id']]['name'];
+      }
+      $skuVariant = $draft['sku_variant'] !== null && $draft['sku_variant'] !== '' ? $draft['sku_variant'] : '—';
+      $imageCover = (string)($draft['image_path'] ?? '');
+      $imagePreview = $imageCover !== '' ? "<img src='".h($imageCover)."' alt='' width='50' height='50'> " : '—';
+      echo "<tr>
+        <td>".h($colorName)."</td>
+        <td>".h($sizeName)."</td>
+        <td>".h((string)$skuVariant)."</td>
+        <td>".$imagePreview."</td>
+        <td>
+          <form method='post' style='margin:0; display:inline;' onsubmit='return confirm(\"¿Eliminar variante?\")'>
+            <input type='hidden' name='csrf' value='".h(csrf_token())."'>
+            <input type='hidden' name='action' value='delete_variant_draft'>
+            <input type='hidden' name='draft_id' value='".h((string)($draft['id'] ?? ''))."'>
+            <button>Eliminar</button>
+          </form>
+        </td>
+      </tr>";
+    }
+    echo "</table>";
+  }
+  $variantFormStyle = $variantDrafts ? '' : " style='display:none;'";
+  echo "<h4>Agregar variante</h4>
+  <form method='post' enctype='multipart/form-data' id='variant-form'".$variantFormStyle.">
+    <input type='hidden' name='csrf' value='".h(csrf_token())."'>
+    <input type='hidden' name='action' value='add_variant_draft'>
+    <input type='hidden' name='product_sku' id='variant-product-sku' value=''>
+    <p>Color:
+      <select name='color_id' id='variant-color-select'>
+        <option value='0'>— elegir —</option>";
+  foreach ($colors as $color) {
+    $colorCode = trim((string)($color['codigo'] ?? ''));
+    $colorCodeAttr = $colorCode !== '' ? " data-code='".h($colorCode)."'" : "";
+    echo "<option value='".h((string)$color['id'])."'".$colorCodeAttr.">".h((string)$color['name'])."</option>";
+  }
+  echo "</select></p>
+    <p>Talle:
+      <select name='size_id' id='variant-size-select'>
+        <option value='0'>— elegir —</option>";
+  foreach ($sizes as $size) {
+    $sizeCode = trim((string)($size['code'] ?? ''));
+    $sizeCodeAttr = $sizeCode !== '' ? " data-code='".h($sizeCode)."'" : "";
+    echo "<option value='".h((string)$size['id'])."'".$sizeCodeAttr.">".h((string)$size['name'])."</option>";
+  }
+  echo "</select></p>
+    <p>SKU: <input name='sku_variant' id='variant-sku-input' style='width:200px' required></p>
+    <p>Imagen: <input type='file' name='variant_image' accept='image/*'></p>
+    <button>Agregar</button>
+  </form>
+  <script>
+  (function() {
+    var toggle = document.getElementById('variant-toggle');
+    var form = document.getElementById('variant-form');
+    if (toggle && form) {
+      toggle.addEventListener('click', function() {
+        form.style.display = '';
+        toggle.style.display = 'none';
+      });
+    }
+  })();
+  (function() {
+    var form = document.getElementById('variant-form');
+    if (!form) return;
+    var colorSelect = form.querySelector('select[name=\"color_id\"]');
+    var sizeSelect = form.querySelector('select[name=\"size_id\"]');
+    var skuInput = form.querySelector('input[name=\"sku_variant\"]');
+    var productSkuInput = document.getElementById('create-sku');
+    var productSkuHidden = document.getElementById('variant-product-sku');
+    if (!colorSelect || !sizeSelect || !skuInput || !productSkuInput || !productSkuHidden) return;
+
+    function syncProductSku() {
+      productSkuHidden.value = productSkuInput.value.trim();
+    }
+
+    function updateVariantSku() {
+      var baseSku = productSkuInput.value.trim();
+      var selectedOption = colorSelect.options[colorSelect.selectedIndex];
+      var sizeOption = sizeSelect.options[sizeSelect.selectedIndex];
+      if (!selectedOption || !sizeOption) {
+        skuInput.value = '';
+        return;
+      }
+      var colorValue = colorSelect.value;
+      var sizeValue = sizeSelect.value;
+      if (colorValue === '0' && sizeValue === '0') {
+        skuInput.value = '';
+        return;
+      }
+      if (baseSku === '') {
+        skuInput.value = '';
+        return;
+      }
+      var pieces = [];
+      if (colorValue !== '0') {
+        var colorCode = (selectedOption.getAttribute('data-code') || '').trim();
+        pieces.push(colorCode !== '' ? colorCode : 'C' + colorValue);
+      }
+      if (sizeValue !== '0') {
+        var sizeCode = (sizeOption.getAttribute('data-code') || '').trim();
+        pieces.push(sizeCode !== '' ? sizeCode : 'T' + sizeValue);
+      }
+      if (!pieces.length) {
+        skuInput.value = '';
+        return;
+      }
+      skuInput.value = baseSku + '-' + pieces.join('-');
+    }
+
+    syncProductSku();
+    colorSelect.addEventListener('change', updateVariantSku);
+    sizeSelect.addEventListener('change', updateVariantSku);
+    productSkuInput.addEventListener('input', function() {
+      syncProductSku();
+      updateVariantSku();
+    });
+    form.addEventListener('submit', function() {
+      syncProductSku();
+    });
+  })();
+  </script>
+  </fieldset>
+  <hr>";
 
   echo "<h3>Copiar desde proveedor</h3>
   <form method='get' action='productos.php'>
