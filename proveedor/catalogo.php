@@ -208,6 +208,7 @@ if ($canManageVariants && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $sizeId = $sizeInput > 0 ? $sizeInput : null;
         $stockQty = 0;
         $skuVariant = trim((string)($_POST['sku_variant'] ?? ''));
+        $universalCode = trim((string)($_POST['universal_code'] ?? ''));
         $imageValue = null;
         $variantCount = 0;
         if ($colorId === null && $sizeId === null) {
@@ -261,6 +262,10 @@ if ($canManageVariants && $_SERVER['REQUEST_METHOD'] === 'POST') {
           }
         }
 
+        if (empty($err) && $universalCode !== '' && !preg_match('/^\d{8,14}$/', $universalCode)) {
+          $err = "El código universal de la variante debe tener entre 8 y 14 números.";
+        }
+
         if (empty($err)) {
           $countSt = $pdo->prepare("SELECT COUNT(*) FROM product_variants WHERE owner_type='provider' AND owner_id=? AND product_id=?");
           $countSt->execute([$providerId, $product_id]);
@@ -277,10 +282,10 @@ if ($canManageVariants && $_SERVER['REQUEST_METHOD'] === 'POST') {
           $posSt->execute([$providerId, $product_id]);
           $nextPos = (int)$posSt->fetchColumn() + 1;
           $insertSt = $pdo->prepare("
-            INSERT INTO product_variants(owner_type, owner_id, product_id, color_id, size_id, sku_variant, stock_qty, image_cover, position)
-            VALUES('provider', ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO product_variants(owner_type, owner_id, product_id, color_id, size_id, sku_variant, universal_code, stock_qty, image_cover, position)
+            VALUES('provider', ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ");
-          $insertSt->execute([$providerId, $product_id, $colorId, $sizeId, $skuVariant, $stockQty, $imageValue, $nextPos]);
+          $insertSt->execute([$providerId, $product_id, $colorId, $sizeId, $skuVariant, $universalCode !== '' ? $universalCode : null, $stockQty, $imageValue, $nextPos]);
           $variantId = (int)$pdo->lastInsertId();
           $uploadedPath = null;
           if (!empty($_FILES['variant_image'])) {
@@ -299,6 +304,7 @@ if ($canManageVariants && $_SERVER['REQUEST_METHOD'] === 'POST') {
       } elseif ($variantAction === 'update_variant') {
         $variantId = (int)($_POST['variant_id'] ?? 0);
         $skuVariant = trim((string)($_POST['sku_variant'] ?? ''));
+        $universalCode = trim((string)($_POST['universal_code'] ?? ''));
         $removeImage = ($_POST['remove_variant_image'] ?? '') === '1';
         if ($variantId <= 0) {
           $err = "Variante inválida.";
@@ -339,6 +345,10 @@ if ($canManageVariants && $_SERVER['REQUEST_METHOD'] === 'POST') {
           }
         }
 
+        if (empty($err) && $universalCode !== '' && !preg_match('/^\d{8,14}$/', $universalCode)) {
+          $err = "El código universal de la variante debe tener entre 8 y 14 números.";
+        }
+
         if (empty($err)) {
           $imageValue = $currentImage ?: null;
           if ($removeImage && $imageValue) {
@@ -359,10 +369,10 @@ if ($canManageVariants && $_SERVER['REQUEST_METHOD'] === 'POST') {
         if (empty($err)) {
           $updateSt = $pdo->prepare("
             UPDATE product_variants
-            SET sku_variant=?, image_cover=?
+            SET sku_variant=?, universal_code=?, image_cover=?
             WHERE id=? AND owner_type='provider' AND owner_id=? AND product_id=?
           ");
-          $updateSt->execute([$skuVariant, $imageValue, $variantId, $providerId, $product_id]);
+          $updateSt->execute([$skuVariant, $universalCode !== '' ? $universalCode : null, $imageValue, $variantId, $providerId, $product_id]);
           if ($updateSt->rowCount() === 0) {
             $err = "Variante inválida.";
           } else {
@@ -507,7 +517,7 @@ if ($edit_id > 0) {
 $variantRows = [];
 if ($edit_id > 0) {
   $variantSt = $pdo->prepare("
-    SELECT pv.id, pv.color_id, pv.size_id, pv.sku_variant, pv.stock_qty, pv.image_cover, pv.position,
+    SELECT pv.id, pv.color_id, pv.size_id, pv.sku_variant, pv.universal_code, pv.stock_qty, pv.image_cover, pv.position,
            c.name AS color_name, s.name AS size_name
     FROM product_variants pv
     LEFT JOIN colors c ON c.id = pv.color_id
@@ -690,7 +700,7 @@ if (!$variantRows) {
   <p>Si crea una variante el stock principal desaparecerá.</p>";
 } else {
   echo "<table border='1' cellpadding='6' cellspacing='0'>
-  <tr><th>Color</th><th>Talle</th><th>SKU</th><th>Imagen</th><th>Acciones</th></tr>";
+  <tr><th>Color</th><th>Talle</th><th>SKU</th><th>Código universal</th><th>Imagen</th><th>Acciones</th></tr>";
   foreach ($variantRows as $variant) {
     $skuVariant = $variant['sku_variant'] !== null && $variant['sku_variant'] !== '' ? $variant['sku_variant'] : '—';
     $colorName = $variant['color_name'] !== null && $variant['color_name'] !== '' ? $variant['color_name'] : '—';
@@ -706,6 +716,7 @@ if (!$variantRows) {
     }
     $removeCheckbox = $imageCover !== '' ? "<label style='margin-left:8px;'><input type='checkbox' name='remove_variant_image' value='1' form='".h($formId)."'> Eliminar</label>" : '';
     echo "<td><input name='sku_variant' value='".h((string)($variant['sku_variant'] ?? ''))."' style='width:160px' form='".h($formId)."' required></td>
+      <td><input name='universal_code' value='".h((string)($variant['universal_code'] ?? ''))."' placeholder='—' style='width:160px' form='".h($formId)."' maxlength='14'></td>
       <td>".$imagePreview."<input type='file' name='variant_image' accept='image/*' form='".h($formId)."'>".$removeCheckbox."</td>
       <td>
         <form method='post' enctype='multipart/form-data' id='".h($formId)."' style='margin:0; display:inline;'>
@@ -765,6 +776,7 @@ if ($role === 'superadmin' || $role === 'provider') {
   }
   echo "</select></p>
     <p>SKU: <input name='sku_variant' id='variant-sku-input' style='width:200px' required></p>
+    <p>Código universal (8-14 dígitos): <input name='universal_code' style='width:200px' maxlength='14'></p>
     <p>Imagen: <input type='file' name='variant_image' accept='image/*'></p>";
   echo "
     <button>Agregar</button>

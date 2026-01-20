@@ -223,6 +223,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array(($_POST['action'] ?? ''), 
     $sizeId = $sizeInput > 0 ? $sizeInput : null;
     $skuVariant = trim((string)($_POST['sku_variant'] ?? ''));
     $productSku = trim((string)($_POST['product_sku'] ?? ''));
+    $universalCode = trim((string)($_POST['universal_code'] ?? ''));
     if ($colorId === null && $sizeId === null) {
       $err = "Elegí un color y/o un talle.";
     }
@@ -249,6 +250,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array(($_POST['action'] ?? ''), 
     if (empty($err) && $skuVariant === '') {
       $err = "SKU de variante obligatorio.";
     }
+    if (empty($err) && $universalCode !== '' && !preg_match('/^\d{8,14}$/', $universalCode)) {
+      $err = "El código universal de la variante debe tener entre 8 y 14 números.";
+    }
     if (empty($err)) {
       foreach ($variantDrafts as $draft) {
         $draftColor = $draft['color_id'] ?? null;
@@ -269,6 +273,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array(($_POST['action'] ?? ''), 
         'color_id' => $colorId,
         'size_id' => $sizeId,
         'sku_variant' => $skuVariant,
+        'universal_code' => $universalCode !== '' ? $universalCode : null,
         'image_path' => $imagePath,
       ];
       $_SESSION['store_variant_drafts'][$storeId]['variants'] = $variantDrafts;
@@ -419,8 +424,8 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '') === 'create'
 
     if ($variantDrafts) {
       $insertVariant = $pdo->prepare("
-        INSERT INTO product_variants(owner_type, owner_id, product_id, color_id, size_id, sku_variant, stock_qty, image_cover, position)
-        VALUES('vendor', ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO product_variants(owner_type, owner_id, product_id, color_id, size_id, sku_variant, universal_code, stock_qty, image_cover, position)
+        VALUES('vendor', ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ");
       $position = 0;
       foreach ($variantDrafts as $draft) {
@@ -428,12 +433,14 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '') === 'create'
         $colorId = isset($draft['color_id']) && $draft['color_id'] !== null ? (int)$draft['color_id'] : null;
         $sizeId = isset($draft['size_id']) && $draft['size_id'] !== null ? (int)$draft['size_id'] : null;
         $skuVariant = trim((string)($draft['sku_variant'] ?? ''));
+        $universalCode = trim((string)($draft['universal_code'] ?? ''));
         $insertVariant->execute([
           $storeId,
           $productId,
           $colorId,
           $sizeId,
           $skuVariant ?: null,
+          $universalCode !== '' ? $universalCode : null,
           0,
           null,
           $position,
@@ -623,7 +630,7 @@ echo "</select>
     <p>Si crea una variante el stock principal desaparecerá.</p>";
   } else {
     echo "<table border='1' cellpadding='6' cellspacing='0'>
-    <tr><th>Color</th><th>Talle</th><th>SKU</th><th>Imagen</th><th>Acciones</th></tr>";
+    <tr><th>Color</th><th>Talle</th><th>SKU</th><th>Código universal</th><th>Imagen</th><th>Acciones</th></tr>";
     foreach ($variantDrafts as $draft) {
       $colorName = '—';
       $sizeName = '—';
@@ -635,11 +642,13 @@ echo "</select>
       }
       $skuVariant = $draft['sku_variant'] !== null && $draft['sku_variant'] !== '' ? $draft['sku_variant'] : '—';
       $imageCover = (string)($draft['image_path'] ?? '');
+      $universalCode = $draft['universal_code'] !== null && $draft['universal_code'] !== '' ? $draft['universal_code'] : '—';
       $imagePreview = $imageCover !== '' ? "<img src='".h($imageCover)."' alt='' width='50' height='50'> " : '—';
       echo "<tr>
         <td>".h($colorName)."</td>
         <td>".h($sizeName)."</td>
         <td>".h((string)$skuVariant)."</td>
+        <td>".h((string)$universalCode)."</td>
         <td>".$imagePreview."</td>
         <td>
           <form method='post' style='margin:0; display:inline;' onsubmit='return confirm(\"¿Eliminar variante?\")'>
@@ -678,6 +687,7 @@ echo "</select>
   }
   echo "</select></p>
     <p>SKU: <input name='sku_variant' id='variant-sku-input' style='width:200px' required></p>
+    <p>Código universal (8-14 dígitos): <input name='universal_code' style='width:200px' maxlength='14'></p>
     <p>Imagen: <input type='file' name='variant_image' accept='image/*'></p>
     <button>Agregar</button>
   </form>
