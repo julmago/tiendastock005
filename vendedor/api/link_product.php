@@ -7,6 +7,7 @@ header('Content-Type: application/json; charset=utf-8');
 
 $productId = (int)($_POST['product_id'] ?? 0);
 $linkedId = (int)($_POST['linked_product_id'] ?? 0);
+$variantId = (int)($_POST['variant_id'] ?? 0);
 
 if (!$productId || !$linkedId) {
   http_response_code(400);
@@ -23,24 +24,47 @@ if (!$seller) {
   exit;
 }
 
-$st = $pdo->prepare("SELECT sp.id FROM store_products sp JOIN stores s ON s.id=sp.store_id WHERE sp.id=? AND s.seller_id=? LIMIT 1");
+$st = $pdo->prepare("SELECT sp.id, sp.store_id FROM store_products sp JOIN stores s ON s.id=sp.store_id WHERE sp.id=? AND s.seller_id=? LIMIT 1");
 $st->execute([$productId, (int)$seller['id']]);
-if (!$st->fetch()) {
+$storeRow = $st->fetch();
+if (!$storeRow) {
   http_response_code(403);
   echo json_encode(['error' => 'Acceso denegado.']);
   exit;
 }
+$storeId = (int)$storeRow['store_id'];
 
-$existsSt = $pdo->prepare("
+if ($variantId > 0) {
+  $variantSt = $pdo->prepare("SELECT id FROM product_variants WHERE id=? AND owner_type='vendor' AND owner_id=? AND product_id=? LIMIT 1");
+  $variantSt->execute([$variantId, $storeId, $productId]);
+  if (!$variantSt->fetch()) {
+    http_response_code(403);
+    echo json_encode(['error' => 'Variante inválida.']);
+    exit;
+  }
+}
+
+$existsSql = "
   SELECT sps.id
-  FROM store_product_sources sps
+  FROM %s sps
   JOIN provider_products pp ON pp.id = sps.provider_product_id
   LEFT JOIN providers p ON p.id = pp.provider_id
   LEFT JOIN warehouse_stock ws ON ws.provider_product_id = pp.id
-  WHERE sps.store_product_id = ? AND sps.provider_product_id = ? AND sps.enabled = 1
+  WHERE %s AND sps.provider_product_id = ? AND sps.enabled = 1
   LIMIT 1
-");
-$existsSt->execute([$productId, $linkedId]);
+";
+$existsParams = [$linkedId];
+$existsCondition = 'sps.store_product_id = ?';
+$existsTable = 'store_product_sources';
+if ($variantId > 0) {
+  $existsCondition = 'sps.variant_id = ?';
+  $existsTable = 'store_variant_sources';
+  array_unshift($existsParams, $variantId);
+} else {
+  array_unshift($existsParams, $productId);
+}
+$existsSt = $pdo->prepare(sprintf($existsSql, $existsTable, $existsCondition));
+$existsSt->execute($existsParams);
 $existingLink = $existsSt->fetch();
 // Log temporal para verificar IDs y resultado de la validación de vínculo.
 error_log(sprintf('[link_product] validate link store_product_id=%d provider_product_id=%d exists=%s', $productId, $linkedId, $existingLink ? '1' : '0'));
@@ -81,10 +105,15 @@ if (!$pp) {
 }
 
 try {
-  $pdo->prepare("INSERT INTO store_product_sources(store_product_id,provider_product_id,enabled) VALUES(?,?,1)")
-      ->execute([$productId, $linkedId]);
+  if ($variantId > 0) {
+    $pdo->prepare("INSERT INTO store_variant_sources(variant_id,provider_product_id,enabled) VALUES(?,?,1)")
+        ->execute([$variantId, $linkedId]);
+  } else {
+    $pdo->prepare("INSERT INTO store_product_sources(store_product_id,provider_product_id,enabled) VALUES(?,?,1)")
+        ->execute([$productId, $linkedId]);
+  }
 } catch (Throwable $e) {
-  $existsSt->execute([$productId, $linkedId]);
+  $existsSt->execute($existsParams);
   $existingLink = $existsSt->fetch();
   // Log temporal para confirmar si el error es por vínculo existente.
   error_log(sprintf('[link_product] insert failed store_product_id=%d provider_product_id=%d exists=%s', $productId, $linkedId, $existingLink ? '1' : '0'));

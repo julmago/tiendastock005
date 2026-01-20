@@ -316,6 +316,31 @@ if (!$variantHandled && $_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action']
   }
 }
 
+if (!$variantHandled && $_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '') === 'update_variant_stock') {
+  $variantId = (int)($_POST['variant_id'] ?? 0);
+  $ownQty = (int)($_POST['own_stock_qty'] ?? 0);
+  $ownPriceRaw = trim((string)($_POST['own_stock_price'] ?? ''));
+  $manualRaw = trim((string)($_POST['manual_price'] ?? ''));
+  $ownPriceVal = ($ownPriceRaw === '') ? null : (float)$ownPriceRaw;
+  $manualVal = ($manualRaw === '') ? null : (float)$manualRaw;
+
+  if ($variantId <= 0) {
+    $err = "Variante inválida.";
+  } else {
+    $upd = $pdo->prepare("
+      UPDATE product_variants
+      SET stock_qty=?, own_stock_price=?, manual_price=?
+      WHERE id=? AND owner_type='vendor' AND owner_id=? AND product_id=?
+    ");
+    $upd->execute([$ownQty, $ownPriceVal, $manualVal, $variantId, $storeId, $productId]);
+    if ($upd->rowCount() === 0) {
+      $err = "Variante inválida.";
+    } else {
+      $msg = "Stock de variante actualizado.";
+    }
+  }
+}
+
 if (!$variantHandled && $_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '') === 'update_images') {
   $upload_dir = __DIR__.'/../uploads/store_products/'.$productId;
   if (!is_dir($upload_dir)) {
@@ -366,12 +391,32 @@ if (!$variantHandled && $_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action']
   }
 }
 
+if (!$variantHandled && $_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '') === 'unlink_source_variant') {
+  $ppId = (int)($_POST['provider_product_id'] ?? 0);
+  $variantId = (int)($_POST['variant_id'] ?? 0);
+
+  if (!$ppId || !$variantId) {
+    $err = "Producto inválido.";
+  } else {
+    $checkVariant = $pdo->prepare("SELECT id FROM product_variants WHERE id=? AND owner_type='vendor' AND owner_id=? AND product_id=?");
+    $checkVariant->execute([$variantId, $storeId, $productId]);
+    if (!$checkVariant->fetch()) {
+      $err = "Variante inválida.";
+    } else {
+      $pdo->prepare("DELETE FROM store_variant_sources WHERE variant_id=? AND provider_product_id=? LIMIT 1")
+          ->execute([$variantId, $ppId]);
+      header("Location: producto.php?id=".$productId);
+      exit;
+    }
+  }
+}
+
 $productSt->execute($productParams);
 $product = $productSt->fetch();
 $product_images = product_images_fetch($pdo, 'store_product', $productId);
 $variantRows = [];
 $variantSt = $pdo->prepare("
-  SELECT pv.id, pv.color_id, pv.size_id, pv.sku_variant, pv.stock_qty, pv.image_cover, pv.position,
+  SELECT pv.id, pv.color_id, pv.size_id, pv.sku_variant, pv.stock_qty, pv.own_stock_price, pv.manual_price, pv.image_cover, pv.position,
          c.name AS color_name, s.name AS size_name
   FROM product_variants pv
   LEFT JOIN colors c ON c.id = pv.color_id
@@ -408,30 +453,77 @@ if ($priceSource === 'manual') {
   $priceSourceLabel = 'stock propio';
 }
 
-$linkedSt = $pdo->prepare("
-  SELECT pp.id, pp.title, pp.sku, pp.universal_code, pp.base_price, p.display_name AS provider_name,
-         COALESCE(SUM(
-           CASE
-             WHEN pv.variant_count > 0 THEN pv.variant_stock
-             ELSE GREATEST(ws.qty_available - ws.qty_reserved,0)
-           END
-         ),0) AS stock
-  FROM store_product_sources sps
-  JOIN provider_products pp ON pp.id = sps.provider_product_id
-  LEFT JOIN providers p ON p.id = pp.provider_id
-  LEFT JOIN warehouse_stock ws ON ws.provider_product_id = pp.id
-  LEFT JOIN (
-    SELECT product_id, owner_id, COUNT(*) AS variant_count, COALESCE(SUM(stock_qty),0) AS variant_stock
-    FROM product_variants
-    WHERE owner_type='provider'
-    GROUP BY product_id, owner_id
-  ) pv ON pv.product_id = pp.id AND pv.owner_id = pp.provider_id
-  WHERE sps.store_product_id = ? AND sps.enabled=1
-  GROUP BY pp.id, pp.title, pp.sku, pp.universal_code, pp.base_price, p.display_name
-  ORDER BY pp.id DESC
-");
-$linkedSt->execute([$productId]);
-$linkedProducts = $linkedSt->fetchAll();
+$linkedProducts = [];
+if (!$hasVariants) {
+  $linkedSt = $pdo->prepare("
+    SELECT pp.id, pp.title, pp.sku, pp.universal_code, pp.base_price, p.display_name AS provider_name,
+           COALESCE(SUM(
+             CASE
+               WHEN pv.variant_count > 0 THEN pv.variant_stock
+               ELSE GREATEST(ws.qty_available - ws.qty_reserved,0)
+             END
+           ),0) AS stock
+    FROM store_product_sources sps
+    JOIN provider_products pp ON pp.id = sps.provider_product_id
+    LEFT JOIN providers p ON p.id = pp.provider_id
+    LEFT JOIN warehouse_stock ws ON ws.provider_product_id = pp.id
+    LEFT JOIN (
+      SELECT product_id, owner_id, COUNT(*) AS variant_count, COALESCE(SUM(stock_qty),0) AS variant_stock
+      FROM product_variants
+      WHERE owner_type='provider'
+      GROUP BY product_id, owner_id
+    ) pv ON pv.product_id = pp.id AND pv.owner_id = pp.provider_id
+    WHERE sps.store_product_id = ? AND sps.enabled=1
+    GROUP BY pp.id, pp.title, pp.sku, pp.universal_code, pp.base_price, p.display_name
+    ORDER BY pp.id DESC
+  ");
+  $linkedSt->execute([$productId]);
+  $linkedProducts = $linkedSt->fetchAll();
+}
+
+$variantLinkedProducts = [];
+$variantProviderStock = [];
+if ($hasVariants) {
+  $variantIds = [];
+  foreach ($variantRows as $variantRow) {
+    $variantIds[] = (int)$variantRow['id'];
+  }
+  if ($variantIds) {
+    $placeholders = implode(',', array_fill(0, count($variantIds), '?'));
+    $variantLinkedSt = $pdo->prepare("
+      SELECT svs.variant_id, pp.id, pp.title, pp.sku, pp.universal_code, pp.base_price, p.display_name AS provider_name,
+             COALESCE(SUM(
+               CASE
+                 WHEN pv.variant_count > 0 THEN pv.variant_stock
+                 ELSE GREATEST(ws.qty_available - ws.qty_reserved,0)
+               END
+             ),0) AS stock
+      FROM store_variant_sources svs
+      JOIN provider_products pp ON pp.id = svs.provider_product_id
+      LEFT JOIN providers p ON p.id = pp.provider_id
+      LEFT JOIN warehouse_stock ws ON ws.provider_product_id = pp.id
+      LEFT JOIN (
+        SELECT product_id, owner_id, COUNT(*) AS variant_count, COALESCE(SUM(stock_qty),0) AS variant_stock
+        FROM product_variants
+        WHERE owner_type='provider'
+        GROUP BY product_id, owner_id
+      ) pv ON pv.product_id = pp.id AND pv.owner_id = pp.provider_id
+      WHERE svs.variant_id IN ($placeholders) AND svs.enabled=1
+      GROUP BY svs.variant_id, pp.id, pp.title, pp.sku, pp.universal_code, pp.base_price, p.display_name
+      ORDER BY svs.variant_id ASC, pp.id DESC
+    ");
+    $variantLinkedSt->execute($variantIds);
+    $variantLinkedRows = $variantLinkedSt->fetchAll();
+    foreach ($variantLinkedRows as $linkedRow) {
+      $variantId = (int)$linkedRow['variant_id'];
+      $variantLinkedProducts[$variantId][] = $linkedRow;
+      if (!isset($variantProviderStock[$variantId])) {
+        $variantProviderStock[$variantId] = 0;
+      }
+      $variantProviderStock[$variantId] += (int)$linkedRow['stock'];
+    }
+  }
+}
 
 page_header('Producto');
 if (!empty($msg)) echo "<p style='color:green'>".h($msg)."</p>";
@@ -571,31 +663,96 @@ if (!$variantRows) {
   <p><button type='button' id='variant-toggle'>Crear variante</button></p>
   <p>Si crea una variante el stock principal desaparecerá.</p>";
 } else {
-  echo "<table border='1' cellpadding='6' cellspacing='0'>
-  <tr><th>Color</th><th>Talle</th><th>SKU</th><th>Imagen</th><th>Acciones</th></tr>";
   foreach ($variantRows as $variant) {
+    $variantId = (int)$variant['id'];
     $skuVariant = $variant['sku_variant'] !== null && $variant['sku_variant'] !== '' ? $variant['sku_variant'] : '—';
     $colorName = $variant['color_name'] !== null && $variant['color_name'] !== '' ? $variant['color_name'] : '—';
     $sizeName = $variant['size_name'] !== null && $variant['size_name'] !== '' ? $variant['size_name'] : '—';
     $imageCover = (string)($variant['image_cover'] ?? '');
-    $imagePreview = $imageCover !== '' ? "<img src='".h($imageCover)."' alt='' width='50' height='50'> " : '—';
-    echo "<tr>
-      <td>".h((string)$colorName)."</td>
-      <td>".h((string)$sizeName)."</td>
-      <td>".h((string)$skuVariant)."</td>
-      <td>".$imagePreview."</td>
-      <td>
+    $imagePreview = $imageCover !== '' ? "<img src='".h($imageCover)."' alt='' width='60' height='60'> " : 'Sin imagen';
+    $providerStock = $variantProviderStock[$variantId] ?? 0;
+    $linkedItems = $variantLinkedProducts[$variantId] ?? [];
+
+    echo "<div class='variant-block' data-variant-id='".h((string)$variantId)."' style='border:1px solid #ccc; padding:12px; margin:12px 0;'>
+      <div style='display:flex; gap:16px; align-items:center; flex-wrap:wrap;'>
+        <span><strong>Color:</strong> ".h((string)$colorName)."</span>
+        <span><strong>Talle:</strong> ".h((string)$sizeName)."</span>
+        <span><strong>SKU:</strong> ".h((string)$skuVariant)."</span>
+        <span><strong>Imagen:</strong> ".$imagePreview."</span>
         <form method='post' style='margin:0; display:inline;' onsubmit='return confirm(\"¿Eliminar variante?\")'>
           <input type='hidden' name='csrf' value='".h(csrf_token())."'>
           <input type='hidden' name='action' value='delete_variant'>
           <input type='hidden' name='product_id' value='".h((string)$productId)."'>
-          <input type='hidden' name='variant_id' value='".h((string)$variant['id'])."'>
-          <button>Eliminar</button>
+          <input type='hidden' name='variant_id' value='".h((string)$variantId)."'>
+          <button>Eliminar variante</button>
         </form>
-      </td>
-    </tr>";
+      </div>
+
+      <div style='margin-top:12px;'>
+        <h4>Stock y precio</h4>";
+    echo "<p>Stock proveedor: ".h((string)$providerStock)."</p>
+        <form method='post'>
+          <input type='hidden' name='csrf' value='".h(csrf_token())."'>
+          <input type='hidden' name='action' value='update_variant_stock'>
+          <input type='hidden' name='variant_id' value='".h((string)$variantId)."'>
+          Own qty <input name='own_stock_qty' value='".h((string)$variant['stock_qty'])."' style='width:70px'>
+          Own $ <input name='own_stock_price' value='".h((string)($variant['own_stock_price'] ?? ''))."' style='width:90px'>
+          Manual $ <input name='manual_price' value='".h((string)($variant['manual_price'] ?? ''))."' style='width:90px'>
+          <button>Guardar</button>
+        </form>
+      </div>
+
+      <div class='variant-provider-panel' data-variant-id='".h((string)$variantId)."' data-product-id='".h((string)$productId)."' style='margin-top:12px;'>
+        <h4>Proveedor</h4>
+        <div class='provider-link-message' style='margin-bottom:8px; color:#b00;'></div>
+        <form class='provider-link-form' method='post' style='max-width:820px;'>
+          <input type='hidden' class='provider-link-csrf' value='".h(csrf_token())."'>
+          <div style='display:flex; gap:8px; align-items:center;'>
+            <input type='text' class='provider-product-search' placeholder='Buscar producto del proveedor…' style='flex:1; padding:6px;'>
+            <button type='submit' class='provider-search-btn'>Buscar</button>
+          </div>
+        </form>
+        <div class='provider-results-wrap' style='margin-top:12px;'>
+          <div class='provider-search-empty-state' style='padding:8px; color:#666; display:none;'></div>
+        </div>
+      </div>
+
+      <div class='linked-section' style='margin-top:12px;'>
+        <h4>Productos vinculados</h4>
+        <div class='linked-table-wrap'>";
+    if (!$linkedItems) {
+      echo "<p class='linked-products-empty'>No hay productos vinculados a esta variante.</p>";
+    } else {
+      echo "<table class='linked-products-table' border='1' cellpadding='6' cellspacing='0'>
+        <thead><tr><th>Proveedor</th><th>Título</th><th>SKU</th><th>Código universal</th><th>Stock</th><th>Precio</th><th>Acciones</th></tr></thead><tbody>";
+      foreach ($linkedItems as $linked) {
+        $providerName = $linked['provider_name'] ?: '—';
+        $universalCode = $linked['universal_code'] ?: '—';
+        $price = $linked['base_price'] !== null ? '$'.number_format((float)$linked['base_price'], 2, ',', '.') : '—';
+        echo "<tr>
+          <td>".h((string)$providerName)."</td>
+          <td>".h((string)$linked['title'])."</td>
+          <td>".h((string)($linked['sku'] ?? ''))."</td>
+          <td>".h((string)$universalCode)."</td>
+          <td>".h((string)$linked['stock'])."</td>
+          <td>".h((string)$price)."</td>
+          <td>
+            <form method='post' style='margin:0' onsubmit='return confirm(\"¿Eliminar vínculo?\")'>
+              <input type='hidden' name='csrf' value='".h(csrf_token())."'>
+              <input type='hidden' name='action' value='unlink_source_variant'>
+              <input type='hidden' name='variant_id' value='".h((string)$variantId)."'>
+              <input type='hidden' name='provider_product_id' value='".h((string)$linked['id'])."'>
+              <button type='submit'>Eliminar</button>
+            </form>
+          </td>
+        </tr>";
+      }
+      echo "</tbody></table>";
+    }
+    echo "</div>
+      </div>
+    </div>";
   }
-  echo "</table>";
 }
 if ($canManageVariants) {
   $variantFormStyle = $variantRows ? '' : " style='display:none;'";
@@ -695,6 +852,269 @@ echo "<script>
 </script>
 </fieldset>
 <hr>";
+
+if ($hasVariants) {
+  echo <<<JS
+<script>
+(function() {
+  function initVariantPanel(panel) {
+    const searchInput = panel.querySelector('.provider-product-search');
+    const resultsBox = panel.querySelector('.provider-results-wrap');
+    const searchForm = panel.querySelector('.provider-link-form');
+    const messageBox = panel.querySelector('.provider-link-message');
+    const emptyStateBox = panel.querySelector('.provider-search-empty-state');
+    const csrfInput = panel.querySelector('.provider-link-csrf');
+    const variantId = panel.getAttribute('data-variant-id');
+    const productId = panel.getAttribute('data-product-id');
+    if (!searchInput || !resultsBox || !searchForm || !messageBox || !emptyStateBox || !csrfInput || !variantId || !productId) {
+      return;
+    }
+    const csrfToken = csrfInput.value;
+
+    function escapeHtml(value) {
+      return value.replace(/[&<>"']/g, function(match) {
+        return ({
+          '&': '&amp;',
+          '<': '&lt;',
+          '>': '&gt;',
+          '"': '&quot;',
+          "'": '&#39;'
+        })[match];
+      });
+    }
+
+    function setMessage(text, color) {
+      messageBox.textContent = text || '';
+      messageBox.style.color = color || '#b00';
+    }
+
+    function formatPrice(value) {
+      if (value === null || value === undefined || value === '') return '—';
+      const numberValue = Number(value);
+      if (Number.isNaN(numberValue)) return '—';
+      return '$' + numberValue.toFixed(2);
+    }
+
+    const emptyStateMessages = {
+      all_linked: 'No hay más productos disponibles para vincular. Todos los productos con stock ya están vinculados.',
+      no_results: 'Sin resultados para la búsqueda ingresada.'
+    };
+
+    function getResultsTable() {
+      return resultsBox.querySelector('table.provider-search-results-table');
+    }
+
+    function ensureResultsTable() {
+      let table = getResultsTable();
+      if (!table) {
+        table = document.createElement('table');
+        table.className = 'provider-search-results-table';
+        table.setAttribute('border', '1');
+        table.setAttribute('cellpadding', '6');
+        table.setAttribute('cellspacing', '0');
+        table.style.width = '100%';
+        table.innerHTML = "<thead><tr><th>Proveedor</th><th>Título</th><th>SKU</th><th>Código universal</th><th>Stock</th><th>Precio</th><th>Acciones</th></tr></thead><tbody></tbody>";
+        resultsBox.appendChild(table);
+      }
+      return table;
+    }
+
+    function updateSearchResultsVisibility() {
+      const table = getResultsTable();
+      const tbody = table ? table.querySelector('tbody') : null;
+      const rowCount = tbody ? tbody.querySelectorAll('tr').length : 0;
+      if (table) {
+        table.style.display = rowCount > 0 ? '' : 'none';
+      }
+      if (emptyStateBox) {
+        emptyStateBox.style.display = rowCount > 0 ? 'none' : '';
+      }
+      return rowCount;
+    }
+
+    function updateSearchResultsVisibilityWithMessage(reason) {
+      const rowCount = updateSearchResultsVisibility();
+      if (rowCount === 0 && emptyStateBox) {
+        const message = emptyStateMessages[reason] || emptyStateMessages.no_results;
+        emptyStateBox.textContent = message;
+      }
+    }
+
+    function renderEmptyState(reason) {
+      const table = getResultsTable();
+      if (table) {
+        const tbody = table.querySelector('tbody');
+        if (tbody) {
+          tbody.innerHTML = '';
+        }
+      }
+      updateSearchResultsVisibilityWithMessage(reason);
+    }
+
+    function renderResults(items, emptyReason) {
+      if (!items.length) {
+        renderEmptyState(emptyReason || 'no_results');
+        return;
+      }
+      const table = ensureResultsTable();
+      const tbody = table.querySelector('tbody');
+      const rows = items.map(function(item) {
+        return "<tr data-id='" + item.id + "'>" +
+          "<td>" + escapeHtml(item.provider_name || '—') + "</td>" +
+          "<td>" + escapeHtml(item.title) + "</td>" +
+          "<td>" + escapeHtml(item.sku || '') + "</td>" +
+          "<td>" + escapeHtml(item.universal_code || '—') + "</td>" +
+          "<td>" + escapeHtml(String(item.stock)) + "</td>" +
+          "<td>" + escapeHtml(formatPrice(item.price)) + "</td>" +
+          "<td><button type='button' class='provider-link-action'>Vincular</button></td>" +
+          "</tr>";
+      }).join('');
+      tbody.innerHTML = rows;
+      updateSearchResultsVisibility();
+    }
+
+    function fetchResults(query) {
+      const params = new URLSearchParams({
+        q: query,
+        product_id: productId,
+        variant_id: variantId
+      });
+      fetch('/vendedor/api/provider_products_search.php?' + params.toString(), {
+        credentials: 'same-origin'
+      })
+        .then(function(res) { return res.json(); })
+        .then(function(data) {
+          if (Array.isArray(data)) {
+            renderResults(data, 'no_results');
+          } else if (data && Array.isArray(data.items)) {
+            renderResults(data.items, data.empty_reason);
+          } else if (data && data.error) {
+            setMessage(data.error);
+          }
+        })
+        .catch(function() {
+          setMessage('No se pudo buscar.');
+        });
+    }
+
+    function addLinkedRow(item) {
+      const variantBlock = panel.closest('.variant-block');
+      if (!variantBlock) return;
+      const emptyRow = variantBlock.querySelector('.linked-products-empty');
+      if (emptyRow) emptyRow.remove();
+      const linkedTableWrap = variantBlock.querySelector('.linked-table-wrap');
+      let table = linkedTableWrap ? linkedTableWrap.querySelector('table.linked-products-table') : null;
+      if (!table) {
+        table = document.createElement('table');
+        table.className = 'linked-products-table';
+        table.setAttribute('border', '1');
+        table.setAttribute('cellpadding', '6');
+        table.setAttribute('cellspacing', '0');
+        table.innerHTML = "<thead><tr><th>Proveedor</th><th>Título</th><th>SKU</th><th>Código universal</th><th>Stock</th><th>Precio</th><th>Acciones</th></tr></thead><tbody></tbody>";
+        if (linkedTableWrap) {
+          linkedTableWrap.appendChild(table);
+        }
+      }
+      const tbody = table.querySelector('tbody') || table;
+      const row = document.createElement('tr');
+      const providerName = item.provider_name || '—';
+      row.innerHTML = "<td>" + escapeHtml(providerName) + "</td>" +
+        "<td>" + escapeHtml(item.title) + "</td>" +
+        "<td>" + escapeHtml(item.sku || '') + "</td>" +
+        "<td>" + escapeHtml(item.universal_code || '—') + "</td>" +
+        "<td>" + escapeHtml(String(item.stock)) + "</td>" +
+        "<td>" + escapeHtml(formatPrice(item.price)) + "</td>" +
+        "<td>" +
+        "<form method='post' style='margin:0' onsubmit='return confirm(\"¿Eliminar vínculo?\")'>" +
+        "<input type='hidden' name='csrf' value='" + escapeHtml(csrfToken) + "'>" +
+        "<input type='hidden' name='action' value='unlink_source_variant'>" +
+        "<input type='hidden' name='variant_id' value='" + escapeHtml(String(variantId)) + "'>" +
+        "<input type='hidden' name='provider_product_id' value='" + escapeHtml(String(item.id)) + "'>" +
+        "<button type='submit'>Eliminar</button>" +
+        "</form>" +
+        "</td>";
+      tbody.appendChild(row);
+    }
+
+    function linkProviderProduct(linkedId, rowEl) {
+      if (!linkedId) {
+        setMessage('Producto inválido.');
+        return;
+      }
+      setMessage('');
+      const body = new URLSearchParams({
+        product_id: productId,
+        linked_product_id: linkedId,
+        variant_id: variantId,
+        csrf: csrfToken
+      });
+      fetch('/vendedor/api/link_product.php', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: body.toString(),
+        credentials: 'same-origin'
+      })
+        .then(function(res) {
+          return res.json().then(function(data) {
+            if (!res.ok) {
+              throw data;
+            }
+            return data;
+          });
+        })
+        .then(function(data) {
+          if (!data || !data.ok) {
+            setMessage('No se pudo vincular.');
+            return;
+          }
+          addLinkedRow(data.item);
+          setMessage('Vinculado correctamente.', 'green');
+          if (rowEl && rowEl.parentNode) {
+            rowEl.parentNode.removeChild(rowEl);
+          }
+          updateSearchResultsVisibilityWithMessage('all_linked');
+        })
+        .catch(function(err) {
+          const errorMessage = err && err.error ? err.error : 'No se pudo vincular.';
+          setMessage(errorMessage);
+        });
+    }
+
+    if (searchForm) {
+      searchForm.addEventListener('submit', function(event) {
+        event.preventDefault();
+        const query = searchInput.value.trim();
+        setMessage('');
+        if (!query) {
+          renderEmptyState('no_results');
+          return;
+        }
+        fetchResults(query);
+      });
+    }
+
+    if (resultsBox) {
+      resultsBox.addEventListener('click', function(event) {
+        const button = event.target.closest('.provider-link-action');
+        if (!button) return;
+        const row = button.closest('tr[data-id]');
+        if (!row) return;
+        const linkedId = row.getAttribute('data-id');
+        linkProviderProduct(linkedId, row);
+      });
+    }
+  }
+
+  const panels = document.querySelectorAll('.variant-provider-panel');
+  panels.forEach(function(panel) {
+    initVariantPanel(panel);
+  });
+})();
+</script>
+JS;
+}
 
 if (!$hasVariants) {
   echo "<div id='provider-section'>

@@ -219,6 +219,19 @@ CREATE TABLE IF NOT EXISTS store_product_sources (
   CONSTRAINT fk_sps_pp FOREIGN KEY (provider_product_id) REFERENCES provider_products(id) ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS store_variant_sources (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  variant_id BIGINT UNSIGNED NOT NULL,
+  provider_product_id BIGINT UNSIGNED NOT NULL,
+  enabled TINYINT(1) NOT NULL DEFAULT 1,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_sv_source (variant_id, provider_product_id),
+  KEY idx_sv_variant (variant_id),
+  CONSTRAINT fk_svs_variant FOREIGN KEY (variant_id) REFERENCES product_variants(id) ON DELETE CASCADE,
+  CONSTRAINT fk_svs_pp FOREIGN KEY (provider_product_id) REFERENCES provider_products(id) ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS colors (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   name VARCHAR(120) NOT NULL,
@@ -254,6 +267,8 @@ CREATE TABLE IF NOT EXISTS product_variants (
   size_key BIGINT UNSIGNED GENERATED ALWAYS AS (IFNULL(size_id,0)) STORED,
   sku_variant VARCHAR(120) NULL,
   stock_qty INT NOT NULL,
+  own_stock_price DECIMAL(12,2) NULL,
+  manual_price DECIMAL(12,2) NULL,
   image_cover VARCHAR(190) NULL,
   position INT NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
