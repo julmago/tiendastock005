@@ -5,6 +5,7 @@ require_role('seller','/vendedor/login.php');
 header('Content-Type: application/json; charset=utf-8');
 
 $productId = (int)($_GET['product_id'] ?? 0);
+$variantId = (int)($_GET['variant_id'] ?? 0);
 $q = trim((string)($_GET['q'] ?? ''));
 $providerId = (int)($_GET['provider_id'] ?? 0);
 
@@ -23,12 +24,24 @@ if (!$seller) {
   exit;
 }
 
-$st = $pdo->prepare("SELECT sp.id FROM store_products sp JOIN stores s ON s.id=sp.store_id WHERE sp.id=? AND s.seller_id=? LIMIT 1");
+$st = $pdo->prepare("SELECT sp.id, sp.store_id FROM store_products sp JOIN stores s ON s.id=sp.store_id WHERE sp.id=? AND s.seller_id=? LIMIT 1");
 $st->execute([$productId, (int)$seller['id']]);
-if (!$st->fetch()) {
+$storeRow = $st->fetch();
+if (!$storeRow) {
   http_response_code(403);
   echo json_encode(['error' => 'Acceso denegado.']);
   exit;
+}
+$storeId = (int)$storeRow['store_id'];
+
+if ($variantId > 0) {
+  $variantSt = $pdo->prepare("SELECT id FROM product_variants WHERE id=? AND owner_type='vendor' AND owner_id=? AND product_id=? LIMIT 1");
+  $variantSt->execute([$variantId, $storeId, $productId]);
+  if (!$variantSt->fetch()) {
+    http_response_code(403);
+    echo json_encode(['error' => 'Variante inválida.']);
+    exit;
+  }
 }
 
 if ($q === '' || mb_strlen($q) < 2) {
@@ -41,7 +54,15 @@ if ($q === '' || mb_strlen($q) < 2) {
 
 $like = "%{$q}%";
 $prefix = "{$q}%";
-$params = [$productId, $like, $like, $like];
+$sourceTable = 'store_product_sources';
+$sourceCondition = 'sps.store_product_id = ?';
+$sourceId = $productId;
+if ($variantId > 0) {
+  $sourceTable = 'store_variant_sources';
+  $sourceCondition = 'sps.variant_id = ?';
+  $sourceId = $variantId;
+}
+$params = [$sourceId, $like, $like, $like];
 $conditions = [
   'pp.title LIKE ?',
   'pp.sku LIKE ?',
@@ -84,8 +105,8 @@ $sql = "
     WHERE owner_type='provider'
     GROUP BY product_id, owner_id
   ) pv ON pv.product_id = pp.id AND pv.owner_id = pp.provider_id
-  LEFT JOIN store_product_sources sps
-    ON sps.provider_product_id = pp.id AND sps.store_product_id = ? AND sps.enabled=1
+  LEFT JOIN {$sourceTable} sps
+    ON sps.provider_product_id = pp.id AND {$sourceCondition} AND sps.enabled=1
   WHERE pp.status='active' AND p.status='active'
     AND sps.id IS NULL
     AND (".implode(' OR ', $conditions).")
@@ -126,8 +147,8 @@ if (!$out) {
       WHERE owner_type='provider'
       GROUP BY product_id, owner_id
     ) pv ON pv.product_id = pp.id AND pv.owner_id = pp.provider_id
-    LEFT JOIN store_product_sources sps
-      ON sps.provider_product_id = pp.id AND sps.store_product_id = ? AND sps.enabled=1
+    LEFT JOIN {$sourceTable} sps
+      ON sps.provider_product_id = pp.id AND {$sourceCondition} AND sps.enabled=1
     WHERE pp.status='active' AND p.status='active'
       AND sps.id IS NULL
     GROUP BY pp.id
@@ -140,7 +161,7 @@ if (!$out) {
     LIMIT 1
   ";
   $checkSt = $pdo->prepare($checkSql);
-  $checkSt->execute([$productId]);
+  $checkSt->execute([$sourceId]);
   $emptyReason = $checkSt->fetch() ? 'no_results' : 'all_linked';
 }
 
