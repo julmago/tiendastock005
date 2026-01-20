@@ -381,6 +381,7 @@ $variantSt = $pdo->prepare("
 ");
 $variantSt->execute([$storeId, $productId]);
 $variantRows = $variantSt->fetchAll();
+$hasVariants = !empty($variantRows);
 if ($role === 'superadmin') {
   $colors = $pdo->query("SELECT id, name, codigo, active FROM colors ORDER BY name ASC, id ASC")->fetchAll();
   $sizes = $pdo->query("SELECT id, name, code, active FROM sizes ORDER BY position ASC, name ASC, id ASC")->fetchAll();
@@ -548,18 +549,20 @@ echo "</ul>
 })();
 </script><hr>";
 
-echo "<h3>Stock y precio</h3>";
-if (!empty($minAppliedMsg)) echo "<p style='color:#b00'>".h($minAppliedMsg)."</p>";
-echo "
-<p>Stock proveedor: ".h((string)$provStock)." | Precio actual (".h($priceSourceLabel)."): ".h($sellTxt)." (total: ".h((string)$stockTotal).")</p>
-<form method='post'>
-<input type='hidden' name='csrf' value='".h(csrf_token())."'>
-<input type='hidden' name='action' value='update_stock'>
-Own qty <input name='own_stock_qty' value='".h((string)$product['own_stock_qty'])."' style='width:70px'>
-Own $ <input name='own_stock_price' value='".h((string)($product['own_stock_price']??''))."' style='width:90px'>
-Manual $ <input name='manual_price' value='".h((string)($product['manual_price']??''))."' style='width:90px'>
-<button>Guardar</button>
-</form><hr>";
+if (!$hasVariants) {
+  echo "<h3>Stock y precio</h3>";
+  if (!empty($minAppliedMsg)) echo "<p style='color:#b00'>".h($minAppliedMsg)."</p>";
+  echo "
+  <p>Stock proveedor: ".h((string)$provStock)." | Precio actual (".h($priceSourceLabel)."): ".h($sellTxt)." (total: ".h((string)$stockTotal).")</p>
+  <form method='post'>
+  <input type='hidden' name='csrf' value='".h(csrf_token())."'>
+  <input type='hidden' name='action' value='update_stock'>
+  Own qty <input name='own_stock_qty' value='".h((string)$product['own_stock_qty'])."' style='width:70px'>
+  Own $ <input name='own_stock_price' value='".h((string)($product['own_stock_price']??''))."' style='width:90px'>
+  Manual $ <input name='manual_price' value='".h((string)($product['manual_price']??''))."' style='width:90px'>
+  <button>Guardar</button>
+  </form><hr>";
+}
 
 echo "<fieldset>
 <legend>Variantes (Color y/o Talle)</legend>";
@@ -693,56 +696,59 @@ echo "<script>
 </fieldset>
 <hr>";
 
-echo "<div id='provider-section'>
-<h3>Proveedor</h3>
-<div id='provider-link-message' style='margin-bottom:8px; color:#b00;'></div>
-<form id='provider-link-form' method='post' style='max-width:820px;'>
-  <input type='hidden' name='csrf' id='provider-link-csrf' value='".h(csrf_token())."'>
-  <input type='hidden' name='product_id' id='provider-store-product-id' value='".h((string)$productId)."'>
-  <div style='display:flex; gap:8px; align-items:center;'>
-    <input type='text' id='provider-product-search' placeholder='Buscar producto del proveedor…' style='flex:1; padding:6px;'>
-    <button type='submit' id='provider-search-btn'>Buscar</button>
+if (!$hasVariants) {
+  echo "<div id='provider-section'>
+  <h3>Proveedor</h3>
+  <div id='provider-link-message' style='margin-bottom:8px; color:#b00;'></div>
+  <form id='provider-link-form' method='post' style='max-width:820px;'>
+    <input type='hidden' name='csrf' id='provider-link-csrf' value='".h(csrf_token())."'>
+    <input type='hidden' name='product_id' id='provider-store-product-id' value='".h((string)$productId)."'>
+    <div style='display:flex; gap:8px; align-items:center;'>
+      <input type='text' id='provider-product-search' placeholder='Buscar producto del proveedor…' style='flex:1; padding:6px;'>
+      <button type='submit' id='provider-search-btn'>Buscar</button>
+    </div>
+  </form>
+  <div id='provider-results-wrap' style='margin-top:12px;'>
+    <div id='provider-search-empty-state' style='padding:8px; color:#666; display:none;'></div>
   </div>
-</form>
-<div id='provider-results-wrap' style='margin-top:12px;'>
-  <div id='provider-search-empty-state' style='padding:8px; color:#666; display:none;'></div>
-</div>
-</div>";
+  </div>";
 
-echo "<div id='linked-section'>
-<h3 id='linked-title'>Productos vinculados</h3>
-<div id='linked-table-wrap'>";
-if (!$linkedProducts) {
-  echo "<p id='linked-products-empty'>No hay productos vinculados a esta publicación.</p>";
-} else {
-  echo "<table id='linked-products-table' border='1' cellpadding='6' cellspacing='0'>
-  <thead><tr><th>Proveedor</th><th>Título</th><th>SKU</th><th>Código universal</th><th>Stock</th><th>Precio</th><th>Acciones</th></tr></thead><tbody>";
-  foreach($linkedProducts as $linked){
-    $providerName = $linked['provider_name'] ?: '—';
-    $universalCode = $linked['universal_code'] ?: '—';
-    $price = $linked['base_price'] !== null ? '$'.number_format((float)$linked['base_price'], 2, ',', '.') : '—';
-    echo "<tr>
-      <td>".h((string)$providerName)."</td>
-      <td>".h((string)$linked['title'])."</td>
-      <td>".h((string)($linked['sku'] ?? ''))."</td>
-      <td>".h((string)$universalCode)."</td>
-      <td>".h((string)$linked['stock'])."</td>
-      <td>".h((string)$price)."</td>
-      <td>
-        <form method='post' style='margin:0' onsubmit='return confirm(\"¿Eliminar vínculo?\")'>
-          <input type='hidden' name='csrf' value='".h(csrf_token())."'>
-          <input type='hidden' name='action' value='unlink_source'>
-          <input type='hidden' name='provider_product_id' value='".h((string)$linked['id'])."'>
-          <button type='submit'>Eliminar</button>
-        </form>
-      </td>
-    </tr>";
+  echo "<div id='linked-section'>
+  <h3 id='linked-title'>Productos vinculados</h3>
+  <div id='linked-table-wrap'>";
+  if (!$linkedProducts) {
+    echo "<p id='linked-products-empty'>No hay productos vinculados a esta publicación.</p>";
+  } else {
+    echo "<table id='linked-products-table' border='1' cellpadding='6' cellspacing='0'>
+    <thead><tr><th>Proveedor</th><th>Título</th><th>SKU</th><th>Código universal</th><th>Stock</th><th>Precio</th><th>Acciones</th></tr></thead><tbody>";
+    foreach($linkedProducts as $linked){
+      $providerName = $linked['provider_name'] ?: '—';
+      $universalCode = $linked['universal_code'] ?: '—';
+      $price = $linked['base_price'] !== null ? '$'.number_format((float)$linked['base_price'], 2, ',', '.') : '—';
+      echo "<tr>
+        <td>".h((string)$providerName)."</td>
+        <td>".h((string)$linked['title'])."</td>
+        <td>".h((string)($linked['sku'] ?? ''))."</td>
+        <td>".h((string)$universalCode)."</td>
+        <td>".h((string)$linked['stock'])."</td>
+        <td>".h((string)$price)."</td>
+        <td>
+          <form method='post' style='margin:0' onsubmit='return confirm(\"¿Eliminar vínculo?\")'>
+            <input type='hidden' name='csrf' value='".h(csrf_token())."'>
+            <input type='hidden' name='action' value='unlink_source'>
+            <input type='hidden' name='provider_product_id' value='".h((string)$linked['id'])."'>
+            <button type='submit'>Eliminar</button>
+          </form>
+        </td>
+      </tr>";
+    }
+    echo "</tbody></table>";
   }
-  echo "</tbody></table>";
+  echo "</div></div>";
 }
-echo "</div></div>";
 
-echo <<<JS
+if (!$hasVariants) {
+  echo <<<JS
 <script>
 (function() {
   const searchInput = document.getElementById('provider-product-search');
@@ -1020,5 +1026,6 @@ echo <<<JS
 })();
 </script>
 JS;
+}
 
 page_footer();
