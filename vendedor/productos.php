@@ -181,6 +181,53 @@ function variant_draft_cleanup(string $token): void {
   @rmdir($dir);
 }
 
+function store_variant_delete_images(array $variants): void {
+  foreach ($variants as $variant) {
+    $imagePath = (string)($variant['image_cover'] ?? '');
+    if ($imagePath === '') {
+      continue;
+    }
+    if (strpos($imagePath, '/uploads/store_variant_images/') !== 0) {
+      continue;
+    }
+    $diskPath = __DIR__.'/../'.ltrim($imagePath, '/');
+    if (is_file($diskPath) && !unlink($diskPath)) {
+      error_log("No se pudo borrar la imagen de variante {$diskPath}");
+    }
+    $dir = dirname($diskPath);
+    $files = is_dir($dir) ? glob($dir.'/*') : [];
+    if ($files === [] && is_dir($dir)) {
+      @rmdir($dir);
+    }
+  }
+}
+
+function store_product_delete_images(int $productId, array $imageBases, array $imageSizes): void {
+  if (!$imageBases) {
+    return;
+  }
+  $uploadDir = __DIR__.'/../uploads/store_products/'.$productId;
+  foreach ($imageBases as $baseName) {
+    if ($baseName === '') {
+      continue;
+    }
+    foreach ($imageSizes as $size) {
+      $filePath = $uploadDir.'/'.product_image_with_size($baseName, $size);
+      if (is_file($filePath) && !unlink($filePath)) {
+        error_log("No se pudo borrar el archivo {$filePath}");
+      }
+    }
+    $originalPath = $uploadDir.'/'.$baseName;
+    if (is_file($originalPath) && !unlink($originalPath)) {
+      error_log("No se pudo borrar el archivo {$originalPath}");
+    }
+  }
+  $files = is_dir($uploadDir) ? glob($uploadDir.'/*') : [];
+  if ($files === [] && is_dir($uploadDir)) {
+    @rmdir($uploadDir);
+  }
+}
+
 function reset_variant_drafts(int $storeId): void {
   $existing = $_SESSION['store_variant_drafts'][$storeId] ?? null;
   $existingToken = is_array($existing) ? (string)($existing['token'] ?? '') : '';
@@ -243,25 +290,54 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'delet
   if ($productId <= 0) {
     $err = "Producto inválido.";
   } else {
-    $productSt = $pdo->prepare("SELECT id FROM store_products WHERE id=? AND store_id=? LIMIT 1");
+    $productSt = $pdo->prepare("SELECT id, status FROM store_products WHERE id=? AND store_id=? LIMIT 1");
     $productSt->execute([$productId, $storeId]);
     $product = $productSt->fetch();
     if (!$product) {
       $err = "Producto inválido.";
     } else {
+      $variantSt = $pdo->prepare("SELECT id, image_cover FROM product_variants WHERE owner_type='vendor' AND owner_id=? AND product_id=?");
+      $variantSt->execute([$storeId, $productId]);
+      $variants = $variantSt->fetchAll();
+      $variantIds = array_map('intval', array_column($variants, 'id'));
+      $imageSt = $pdo->prepare("SELECT filename_base FROM product_images WHERE owner_type='store_product' AND owner_id=?");
+      $imageSt->execute([$productId]);
+      $productImages = $imageSt->fetchAll(PDO::FETCH_COLUMN);
+      $orderItemSt = $pdo->prepare("SELECT COUNT(*) FROM order_items WHERE store_product_id=?");
+      $orderItemSt->execute([$productId]);
+      $orderItems = (int)$orderItemSt->fetchColumn();
       $pdo->beginTransaction();
       try {
+        if (!empty($variantIds)) {
+          $placeholders = implode(',', array_fill(0, count($variantIds), '?'));
+          $pdo->prepare("DELETE FROM store_variant_sources WHERE variant_id IN ({$placeholders})")
+              ->execute($variantIds);
+        }
         $pdo->prepare("DELETE FROM product_variants WHERE owner_type='vendor' AND owner_id=? AND product_id=?")
             ->execute([$storeId, $productId]);
         $pdo->prepare("DELETE FROM product_images WHERE owner_type='store_product' AND owner_id=?")
             ->execute([$productId]);
-        $pdo->prepare("DELETE FROM store_products WHERE id=? AND store_id=?")
-            ->execute([$productId, $storeId]);
+        $pdo->prepare("DELETE FROM store_product_sources WHERE store_product_id=?")
+            ->execute([$productId]);
+        if ($orderItems > 0) {
+          $pdo->prepare("UPDATE store_products SET status='inactive' WHERE id=? AND store_id=?")
+              ->execute([$productId, $storeId]);
+        } else {
+          $pdo->prepare("DELETE FROM store_products WHERE id=? AND store_id=?")
+              ->execute([$productId, $storeId]);
+        }
         $pdo->commit();
-        $msg = "Producto eliminado.";
+        store_variant_delete_images($variants);
+        store_product_delete_images($productId, $productImages, $image_sizes);
+        if ($orderItems > 0) {
+          $msg = "Producto archivado porque tiene pedidos asociados.";
+        } else {
+          $msg = "Producto eliminado.";
+        }
       } catch (Throwable $e) {
         $pdo->rollBack();
-        $err = "No se pudo eliminar el producto.";
+        error_log(sprintf('[delete_product] store_id=%d product_id=%d error=%s', $storeId, $productId, $e->getMessage()));
+        $err = "No se pudo eliminar el producto: ".$e->getMessage();
       }
     }
   }
@@ -688,7 +764,7 @@ echo "<div style='display:flex; align-items:center; justify-content:flex-end; ga
 if ($action === 'list') {
   echo "<hr>";
 
-  $stp = $pdo->prepare("SELECT * FROM store_products WHERE store_id=? ORDER BY id DESC");
+  $stp = $pdo->prepare("SELECT * FROM store_products WHERE store_id=? AND status='active' ORDER BY id DESC");
   $stp->execute([$storeId]);
   $storeProducts = $stp->fetchAll();
 
