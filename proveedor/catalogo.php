@@ -502,7 +502,11 @@ if (!$variantHandled && $_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action']
 }
 
 if ($edit_id > 0) {
-  $st = $pdo->prepare("SELECT id,title,sku,universal_code,description,base_price,category_id FROM provider_products WHERE id=? AND provider_id=? LIMIT 1");
+  $st = $pdo->prepare("SELECT p.id, p.title, p.sku, p.universal_code, p.description, p.base_price, p.category_id,
+      COALESCE(ws.qty_available,0) AS stock_qty
+    FROM provider_products p
+    LEFT JOIN warehouse_stock ws ON ws.provider_product_id=p.id
+    WHERE p.id=? AND p.provider_id=? LIMIT 1");
   $st->execute([$edit_id,$providerId]);
   $edit_product = $st->fetch();
   if (!$edit_product) {
@@ -594,7 +598,13 @@ echo "<form method='post' enctype='multipart/form-data'>
 <p>SKU: <input name='sku' style='width:220px' value='".h($edit_product['sku'] ?? '')."'></p>
 <p>Código universal (8-14 dígitos): <input name='universal_code' style='width:220px' value='".h($edit_product['universal_code'] ?? '')."'></p>
 <p>Precio base: <input name='base_price' style='width:160px' value='".h((string)($edit_product['base_price'] ?? ''))."'></p>
-<p>Categoría:
+";
+$hasVariants = !empty($variantRows);
+if (!$hasVariants) {
+  $stockValue = (string)($edit_product['stock_qty'] ?? 0);
+  echo "<p>Stock: <input style='width:160px' value='".h($stockValue)."' readonly></p>";
+}
+echo "<p>Categoría:
   <select name='category_id'>
     <option value='0'".(empty($edit_product['category_id']) ? ' selected' : '').">Sin categoría</option>";
 foreach ($flatCategories as $cat) {
@@ -700,7 +710,7 @@ if (!$variantRows) {
   <p>Si crea una variante el stock principal desaparecerá.</p>";
 } else {
   echo "<table border='1' cellpadding='6' cellspacing='0'>
-  <tr><th>Color</th><th>Talle</th><th>SKU</th><th>Código universal</th><th>Imagen</th><th>Acciones</th></tr>";
+  <tr><th>Color</th><th>Talle</th><th>SKU</th><th>Código universal</th><th>Imagen</th><th>Stock</th><th>Acciones</th></tr>";
   foreach ($variantRows as $variant) {
     $skuVariant = $variant['sku_variant'] !== null && $variant['sku_variant'] !== '' ? $variant['sku_variant'] : '—';
     $colorName = $variant['color_name'] !== null && $variant['color_name'] !== '' ? $variant['color_name'] : '—';
@@ -718,6 +728,7 @@ if (!$variantRows) {
     echo "<td><input name='sku_variant' value='".h((string)($variant['sku_variant'] ?? ''))."' style='width:160px' form='".h($formId)."' required></td>
       <td><input name='universal_code' value='".h((string)($variant['universal_code'] ?? ''))."' placeholder='—' style='width:160px' form='".h($formId)."' maxlength='14'></td>
       <td>".$imagePreview."<input type='file' name='variant_image' accept='image/*' form='".h($formId)."'>".$removeCheckbox."</td>
+      <td>".h((string)($variant['stock_qty'] ?? 0))."</td>
       <td>
         <form method='post' enctype='multipart/form-data' id='".h($formId)."' style='margin:0; display:inline;'>
           <input type='hidden' name='csrf' value='".h(csrf_token())."'>
